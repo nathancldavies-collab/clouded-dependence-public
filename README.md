@@ -2,7 +2,7 @@
 
 Code for the multi-step attribution pipeline described in:
 
-> Davies, N. (2026). *Clouded Dependence: Hidden Hyperscaler Concentration in US Federal IT Procurement*. [Working paper / journal citation TBC]
+> Davies, N. & Rystrøm, J. (2026). *Clouded Dependence: Supplier Diversity and Hidden Platform Concentration in Digital Government*. [Working paper / journal citation TBC]
 
 The paper identifies and measures hidden platform concentration in US federal IT procurement by tracing cloud platform dependencies embedded within contractor relationships. Across 216,604 contract records (FY 2017–2024, $237B), the pipeline finds that platform-level concentration (HHI 793) is 7.6× the contractor-level baseline (HHI 105) — a gap that is invisible when using standard contractor-level market analysis.
 
@@ -198,18 +198,6 @@ The pipeline attributes cloud records to eight platforms:
 
 **Note on subsidiaries:** Phase 1 entity matching maps parent company name variants only. Subsidiary brand names (e.g., Heroku → Salesforce, Tableau Online → Salesforce) are captured via description-level patterns in Phase 2. Cerner Corporation, acquired by Oracle in 2022, is attributed as a standalone entity in the baseline results; a sensitivity specification mapping post-acquisition Cerner contracts to Oracle Cloud is available via `data/02_processed/03_classified/attributed_dataset_oracle_cerner.csv`.
 
----
-
-## Citation
-
-```bibtex
-@article{davies2026clouded,
-  title   = {Clouded Dependence: Hidden Hyperscaler Concentration in US Federal IT Procurement},
-  author  = {Davies, Nathan},
-  year    = {2026},
-  note    = {Working paper}
-}
-```
 
 ---
 
