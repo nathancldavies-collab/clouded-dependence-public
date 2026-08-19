@@ -65,7 +65,8 @@ Raw FPDS-NG data
 clouded-dependence-public/
 ├── run_pipeline.py                  # Main runner — executes all stages in order
 ├── batch_manager.py                 # LLM batch job management (chunked Batch API)
-├── requirements.txt
+├── pyproject.toml
+├── justfile
 │
 ├── pipeline/
 │   ├── 01_prep/
@@ -113,10 +114,17 @@ FPDS-NG data is publicly available via [USAspending.gov](https://www.usaspending
 
 ## Setup
 
+Install [`uv`](https://docs.astral.sh/uv/), then use it to get [`just`](https://just.systems):
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv tool install rust-just
+```
+
 ```bash
 git clone https://github.com/[your-username]/clouded-dependence-public
 cd clouded-dependence-public
-pip install -r requirements.txt
+just install
 ```
 
 Place your FPDS-NG data files in `data/01_raw/` (this directory is gitignored).

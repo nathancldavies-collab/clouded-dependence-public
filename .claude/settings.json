@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv --version)",
+      "Bash(uv sync *)",
+      "Bash(just install *)",
+      "Bash(uv tool *)"
+    ]
+  }
+}
