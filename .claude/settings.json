@@ -4,7 +4,8 @@
       "Bash(uv --version)",
       "Bash(uv sync *)",
       "Bash(just install *)",
-      "Bash(uv tool *)"
+      "Bash(uv tool *)",
+      "Bash(git status *)"
     ]
   }
 }

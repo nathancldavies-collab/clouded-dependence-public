@@ -4,7 +4,7 @@
 *.xls
 *.tsv
 *.parquet
-data/
+data/**
 outputs*/
 
 # LLM cache and batch results
@@ -48,3 +48,7 @@ desktop.ini
 .idea/
 *.swp
 *.swo
+
+# Keep data directory structure (contents still ignored above)
+!data/**/
+!**/.gitkeep
