@@ -20,21 +20,19 @@ Usage:
   python notebooks/04_validation/build_validation_sample.py
 """
 
-import os
-import sys
-import pandas as pd
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
+
+from clouded_deps.directories import DATA_DIR, OUTPUTS_DIR
 
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-DATA_FILE = os.path.join(
-    PROJECT_ROOT,
-    "data", "02_processed", "03_classified", "attributed_dataset.csv"
-)
-OUT_DIR = os.path.join(PROJECT_ROOT, "outputs_results_v2", "validation")
-os.makedirs(OUT_DIR, exist_ok=True)
+DATA_FILE = DATA_DIR / "02_processed" / "03_classified" / "attributed_dataset.csv"
+OUT_DIR = OUTPUTS_DIR / "validation"
+OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 RANDOM_SEED = 42
 
@@ -49,16 +47,16 @@ ID_COLS = [
 ]
 CONTRACTOR_COLS = [
     "contractor_name",
-    "prime_contractor",   # only meaningful for subcontracts
+    "prime_contractor",  # only meaningful for subcontracts
 ]
 TEXT_COL = "description"
 
 PIPELINE_COLS = [
-    "cloud_classification",       # FINAL: non-cloud | cloud-dependent | cloud-infrastructure
+    "cloud_classification",  # FINAL: non-cloud | cloud-dependent | cloud-infrastructure
     "is_cloud",
-    "final_platform",             # FINAL platform (or contractor name if unattributed)
-    "attribution_method",         # phase1_direct | phase2_description | phase3_pattern | ...
-    "confidence",                 # conclusive | high | medium | pattern_inferred | unattributed | N/A
+    "final_platform",  # FINAL platform (or contractor name if unattributed)
+    "attribution_method",  # phase1_direct | phase2_description | phase3_pattern | ...
+    "confidence",  # conclusive | high | medium | pattern_inferred | unattributed | N/A
 ]
 DIAGNOSTIC_COLS = [
     "regex_is_cloud",
@@ -67,28 +65,31 @@ DIAGNOSTIC_COLS = [
     "llm_classification",
     "llm_platform",
     "llm_confidence",
-    "classification_source",      # regex+llm_agree | llm_only | regex_only | conflict
+    "classification_source",  # regex+llm_agree | llm_only | regex_only | conflict
     "classification_confidence",  # high | medium | low | conflict
 ]
 
 # Reviewer-filled columns
 REVIEW_COLS_A = [
-    "manual_classification",   # non-cloud | cloud-dependent | cloud-infrastructure
+    "manual_classification",  # non-cloud | cloud-dependent | cloud-infrastructure
     "correct_classification",  # Y / N / ?
     "notes",
 ]
 REVIEW_COLS_B = [
-    "manual_platform",         # platform name | 'cannot determine' | 'unattributable'
-    "correct_attribution",     # Y / N / ?
+    "manual_platform",  # platform name | 'cannot determine' | 'unattributable'
+    "correct_attribution",  # Y / N / ?
     "notes",
 ]
 
-ALL_SOURCE_COLS = ID_COLS + CONTRACTOR_COLS + [TEXT_COL] + PIPELINE_COLS + DIAGNOSTIC_COLS
+ALL_SOURCE_COLS = (
+    ID_COLS + CONTRACTOR_COLS + [TEXT_COL] + PIPELINE_COLS + DIAGNOSTIC_COLS
+)
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def safe_sample(df: pd.DataFrame, n: int, label: str) -> pd.DataFrame:
     """Sample up to n rows; warn if fewer available."""
@@ -124,6 +125,7 @@ def already_selected(frames: list) -> pd.Series:
 # Part A: Classification validation sample (~175 records)
 # ---------------------------------------------------------------------------
 
+
 def build_part_a(df: pd.DataFrame) -> pd.DataFrame:
     """
     Stratified sample designed to surface the cases most likely to be wrong:
@@ -140,50 +142,80 @@ def build_part_a(df: pd.DataFrame) -> pd.DataFrame:
 
     # Stratum 1: conflict
     conflict = df[df["classification_source"] == "conflict"]
-    s = safe_sample(conflict, 30, "conflict"); s["_stratum"] = "1_conflict_regex_llm"; frames.append(s)
-    print(f"  Conflict (regex vs LLM disagree):   {len(conflict):,} pool → {len(s)} sampled")
+    s = safe_sample(conflict, 30, "conflict")
+    s["_stratum"] = "1_conflict_regex_llm"
+    frames.append(s)
+    print(
+        f"  Conflict (regex vs LLM disagree):   {len(conflict):,} pool → {len(s)} sampled"
+    )
 
     # Stratum 2: LLM-only
     llm_only = df[df["classification_source"] == "llm_only"]
     llm_only = llm_only[~llm_only["original_prime_id"].isin(already_selected(frames))]
-    s = safe_sample(llm_only, 25, "llm_only"); s["_stratum"] = "2_llm_only"; frames.append(s)
-    print(f"  LLM-only (no regex signal):          {len(llm_only):,} pool → {len(s)} sampled")
+    s = safe_sample(llm_only, 25, "llm_only")
+    s["_stratum"] = "2_llm_only"
+    frames.append(s)
+    print(
+        f"  LLM-only (no regex signal):          {len(llm_only):,} pool → {len(s)} sampled"
+    )
 
     # Stratum 3: low-confidence cloud
     low_conf = df[
-        df["is_cloud"].fillna(False).astype(bool) &
-        df["classification_confidence"].isin(["low", "conflict"])
+        df["is_cloud"].fillna(False).astype(bool)
+        & df["classification_confidence"].isin(["low", "conflict"])
     ]
     low_conf = low_conf[~low_conf["original_prime_id"].isin(already_selected(frames))]
-    s = safe_sample(low_conf, 25, "low_conf_cloud"); s["_stratum"] = "3_low_confidence_cloud"; frames.append(s)
-    print(f"  Low-confidence cloud:                {len(low_conf):,} pool → {len(s)} sampled")
+    s = safe_sample(low_conf, 25, "low_conf_cloud")
+    s["_stratum"] = "3_low_confidence_cloud"
+    frames.append(s)
+    print(
+        f"  Low-confidence cloud:                {len(low_conf):,} pool → {len(s)} sampled"
+    )
 
     # Stratum 4: cloud-infrastructure (minority class)
     infra = df[df["cloud_classification"] == "cloud-infrastructure"]
     infra = infra[~infra["original_prime_id"].isin(already_selected(frames))]
-    s = safe_sample(infra, 25, "cloud-infrastructure"); s["_stratum"] = "4_cloud_infrastructure"; frames.append(s)
-    print(f"  cloud-infrastructure:                {len(infra):,} pool → {len(s)} sampled")
+    s = safe_sample(infra, 25, "cloud-infrastructure")
+    s["_stratum"] = "4_cloud_infrastructure"
+    frames.append(s)
+    print(
+        f"  cloud-infrastructure:                {len(infra):,} pool → {len(s)} sampled"
+    )
 
     # Stratum 5: cloud-dependent, high confidence (easy positives)
     cdep_high = df[
-        (df["cloud_classification"] == "cloud-dependent") &
-        (df["classification_confidence"] == "high") &
-        (df["classification_source"] == "regex+llm_agree")
+        (df["cloud_classification"] == "cloud-dependent")
+        & (df["classification_confidence"] == "high")
+        & (df["classification_source"] == "regex+llm_agree")
     ]
-    cdep_high = cdep_high[~cdep_high["original_prime_id"].isin(already_selected(frames))]
-    s = safe_sample(cdep_high, 25, "cloud_dep_high"); s["_stratum"] = "5_cloud_dependent_high_conf"; frames.append(s)
-    print(f"  cloud-dependent high-conf:           {len(cdep_high):,} pool → {len(s)} sampled")
+    cdep_high = cdep_high[
+        ~cdep_high["original_prime_id"].isin(already_selected(frames))
+    ]
+    s = safe_sample(cdep_high, 25, "cloud_dep_high")
+    s["_stratum"] = "5_cloud_dependent_high_conf"
+    frames.append(s)
+    print(
+        f"  cloud-dependent high-conf:           {len(cdep_high):,} pool → {len(s)} sampled"
+    )
 
     # Stratum 6: non-cloud baseline
     non_cloud = df[df["cloud_classification"] == "non-cloud"]
-    non_cloud = non_cloud[~non_cloud["original_prime_id"].isin(already_selected(frames))]
-    s = safe_sample(non_cloud, 45, "non_cloud"); s["_stratum"] = "6_non_cloud_baseline"; frames.append(s)
-    print(f"  non-cloud baseline:                  {len(non_cloud):,} pool → {len(s)} sampled")
+    non_cloud = non_cloud[
+        ~non_cloud["original_prime_id"].isin(already_selected(frames))
+    ]
+    s = safe_sample(non_cloud, 45, "non_cloud")
+    s["_stratum"] = "6_non_cloud_baseline"
+    frames.append(s)
+    print(
+        f"  non-cloud baseline:                  {len(non_cloud):,} pool → {len(s)} sampled"
+    )
 
-    result = pd.concat(frames, ignore_index=True).drop_duplicates(subset=["original_prime_id"])
+    result = pd.concat(frames, ignore_index=True).drop_duplicates(
+        subset=["original_prime_id"]
+    )
     print(f"\n  Total Part A: {len(result)} records")
 
-    out_cols = [c for c in ALL_SOURCE_COLS + ["_stratum"] if c in result.columns]
+    out_cols = [c for c in [*ALL_SOURCE_COLS, "_stratum"] if c in result.columns]
     result = result[out_cols].copy()
     for col in REVIEW_COLS_A:
         result[col] = ""
@@ -194,6 +226,7 @@ def build_part_a(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 # Part B: Attribution validation sample (~100 records)
 # ---------------------------------------------------------------------------
+
 
 def build_part_b(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -213,50 +246,70 @@ def build_part_b(df: pd.DataFrame) -> pd.DataFrame:
 
     # Phase 1
     p1 = cloud[cloud["attribution_method"] == "phase1_direct"]
-    s = safe_sample(p1, 15, "phase1"); s["_stratum"] = "1_phase1_direct_entity"; frames.append(s)
+    s = safe_sample(p1, 15, "phase1")
+    s["_stratum"] = "1_phase1_direct_entity"
+    frames.append(s)
     print(f"  Phase 1 (direct entity):             {len(p1):,} pool → {len(s)} sampled")
 
     # Phase 2 – high/medium confidence
     p2h = cloud[
-        (cloud["attribution_method"] == "phase2_description") &
-        (cloud["classification_confidence"].isin(["high", "medium"]))
+        (cloud["attribution_method"] == "phase2_description")
+        & (cloud["classification_confidence"].isin(["high", "medium"]))
     ]
     p2h = p2h[~p2h["original_prime_id"].isin(already_selected(frames))]
-    s = safe_sample(p2h, 15, "phase2_high"); s["_stratum"] = "2_phase2_description_highmed"; frames.append(s)
+    s = safe_sample(p2h, 15, "phase2_high")
+    s["_stratum"] = "2_phase2_description_highmed"
+    frames.append(s)
 
     # Phase 2 – low/conflict confidence
     p2l = cloud[
-        (cloud["attribution_method"] == "phase2_description") &
-        (cloud["classification_confidence"].isin(["low", "conflict"]))
+        (cloud["attribution_method"] == "phase2_description")
+        & (cloud["classification_confidence"].isin(["low", "conflict"]))
     ]
     p2l = p2l[~p2l["original_prime_id"].isin(already_selected(frames))]
-    s = safe_sample(p2l, 10, "phase2_low"); s["_stratum"] = "3_phase2_description_lowconf"; frames.append(s)
-    print(f"  Phase 2 (description):               {len(p2h)+len(p2l):,} pool → {15+len(s)} sampled")
+    s = safe_sample(p2l, 10, "phase2_low")
+    s["_stratum"] = "3_phase2_description_lowconf"
+    frames.append(s)
+    print(
+        f"  Phase 2 (description):               {len(p2h) + len(p2l):,} pool → {15 + len(s)} sampled"
+    )
 
     # Phase 3
     p3 = cloud[cloud["attribution_method"] == "phase3_pattern"]
     p3 = p3[~p3["original_prime_id"].isin(already_selected(frames))]
-    s = safe_sample(p3, 20, "phase3"); s["_stratum"] = "4_phase3_pattern_inferred"; frames.append(s)
+    s = safe_sample(p3, 20, "phase3")
+    s["_stratum"] = "4_phase3_pattern_inferred"
+    frames.append(s)
     print(f"  Phase 3 (pattern inferred):          {len(p3):,} pool → {len(s)} sampled")
 
     # Unattributed cloud
     unattr = cloud[cloud["attribution_method"] == "cloud_unattributed_contractor"]
     unattr = unattr[~unattr["original_prime_id"].isin(already_selected(frames))]
-    s = safe_sample(unattr, 20, "unattributed"); s["_stratum"] = "5_unattributed_cloud"; frames.append(s)
-    print(f"  Unattributed cloud:                  {len(unattr):,} pool → {len(s)} sampled")
+    s = safe_sample(unattr, 20, "unattributed")
+    s["_stratum"] = "5_unattributed_cloud"
+    frames.append(s)
+    print(
+        f"  Unattributed cloud:                  {len(unattr):,} pool → {len(s)} sampled"
+    )
 
     # Platform top-ups: ensure ≥3 records per major platform
     MAJOR_PLATFORMS = [
-        "AWS", "Azure", "Google Cloud", "Oracle Cloud",
-        "IBM Cloud", "Salesforce", "ServiceNow", "Workday"
+        "AWS",
+        "Azure",
+        "Google Cloud",
+        "Oracle Cloud",
+        "IBM Cloud",
+        "Salesforce",
+        "ServiceNow",
+        "Workday",
     ]
     for platform in MAJOR_PLATFORMS:
         so_far = pd.concat(frames)
         have = len(so_far[so_far["final_platform"] == platform])
         if have < 3:
             pool = cloud[
-                (cloud["final_platform"] == platform) &
-                (~cloud["original_prime_id"].isin(so_far["original_prime_id"]))
+                (cloud["final_platform"] == platform)
+                & (~cloud["original_prime_id"].isin(so_far["original_prime_id"]))
             ]
             s = safe_sample(pool, 3 - have, f"topup_{platform}")
             if len(s):
@@ -264,10 +317,12 @@ def build_part_b(df: pd.DataFrame) -> pd.DataFrame:
                 frames.append(s)
                 print(f"  Platform top-up {platform}: added {len(s)}")
 
-    result = pd.concat(frames, ignore_index=True).drop_duplicates(subset=["original_prime_id"])
+    result = pd.concat(frames, ignore_index=True).drop_duplicates(
+        subset=["original_prime_id"]
+    )
     print(f"\n  Total Part B: {len(result)} records")
 
-    out_cols = [c for c in ALL_SOURCE_COLS + ["_stratum"] if c in result.columns]
+    out_cols = [c for c in [*ALL_SOURCE_COLS, "_stratum"] if c in result.columns]
     result = result[out_cols].copy()
     for col in REVIEW_COLS_B:
         result[col] = ""
@@ -279,7 +334,8 @@ def build_part_b(df: pd.DataFrame) -> pd.DataFrame:
 # Summary template
 # ---------------------------------------------------------------------------
 
-def write_summary_template(path: str, n_a: int, n_b: int):
+
+def write_summary_template(path: Path, n_a: int, n_b: int):
     text = f"""# Human Validation Summary — Clouded Dependence
 
 **Date of review:** _______________
@@ -392,13 +448,13 @@ _______________________________________________________________________________
 ---
 *Generated by notebooks/04_validation/build_validation_sample.py*
 """
-    with open(path, "w") as f:
-        f.write(text)
+    path.write_text(text)
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main():
     df = load_data()
@@ -406,15 +462,15 @@ def main():
     part_a = build_part_a(df)
     part_b = build_part_b(df)
 
-    path_a = os.path.join(OUT_DIR, "part_a_classification_sample.csv")
-    path_b = os.path.join(OUT_DIR, "part_b_attribution_sample.csv")
-    path_tmpl = os.path.join(OUT_DIR, "validation_summary_template.md")
+    path_a = OUT_DIR / "part_a_classification_sample.csv"
+    path_b = OUT_DIR / "part_b_attribution_sample.csv"
+    path_tmpl = OUT_DIR / "validation_summary_template.md"
 
     part_a.to_csv(path_a, index=False)
     part_b.to_csv(path_b, index=False)
     write_summary_template(path_tmpl, len(part_a), len(part_b))
 
-    print(f"\n=== Outputs written ===")
+    print("\n=== Outputs written ===")
     print(f"  {path_a}  ({len(part_a)} records, {part_a.shape[1]} cols)")
     print(f"  {path_b}  ({len(part_b)} records, {part_b.shape[1]} cols)")
     print(f"  {path_tmpl}")

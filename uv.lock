@@ -442,7 +442,7 @@ wheels = [
 [[package]]
 name = "clouded-dependence"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
     { name = "jupyter" },
