@@ -38,6 +38,9 @@ env/
 .ipynb_checkpoints/
 *.ipynb_checkpoints
 
+## EDA
+**/EDA.ipynb
+
 # OS
 .DS_Store
 Thumbs.db
