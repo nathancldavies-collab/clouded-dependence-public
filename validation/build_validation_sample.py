@@ -14,16 +14,21 @@ Generates two stratified CSVs for manual review:
 Output files (in outputs_results_v2/validation/):
   part_a_classification_sample.csv
   part_b_attribution_sample.csv
+  part_a_classification_rating_<RATER>.xlsx
+  part_b_attribution_rating_<RATER>.xlsx
   validation_summary_template.md
 
 Usage:
-  python notebooks/04_validation/build_validation_sample.py
+  uv run validation/build_validation_sample.py --rater JR
 """
 
+import argparse
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.worksheet.table import Table, TableStyleInfo
 
 from clouded_deps.directories import DATA_DIR, OUTPUTS_DIR
 
@@ -79,6 +84,37 @@ REVIEW_COLS_B = [
     "manual_platform",  # platform name | 'cannot determine' | 'unattributable'
     "correct_attribution",  # Y / N / ?
     "notes",
+]
+
+# ---------------------------------------------------------------------------
+# Manual rating spreadsheets (one per rater)
+# ---------------------------------------------------------------------------
+RATERS = ["ND", "JR"]
+
+RATING_COLS = [
+    "original_prime_id",
+    "contractor",
+    "description",
+    "classification",
+    "rater",
+]
+
+# Allowed values for the `classification` column of each rating spreadsheet.
+CLASSIFICATION_OPTIONS = [
+    "non-cloud",
+    "cloud-dependent",
+    "cloud-infrastructure",
+]
+PLATFORM_OPTIONS = [
+    "AWS",
+    "Azure",
+    "Google Cloud",
+    "Oracle Cloud",
+    "IBM Cloud",
+    "Salesforce",
+    "Multi-cloud",
+    "Unspecified",
+    "N/A",
 ]
 
 ALL_SOURCE_COLS = (
@@ -330,6 +366,56 @@ def build_part_b(df: pd.DataFrame) -> pd.DataFrame:
     return result.sort_values("_stratum").reset_index(drop=True)
 
 
+def build_rating_sheet(sample: pd.DataFrame, rater: str) -> pd.DataFrame:
+    """Reduce a validation sample to the blank rating spreadsheet layout."""
+    return pd.DataFrame(
+        {
+            "original_prime_id": sample["original_prime_id"].values,
+            "contractor": sample["contractor_name"].values,
+            "description": sample[TEXT_COL].values,
+            "classification": "",
+            "rater": rater,
+        },
+        columns=RATING_COLS,
+    )
+
+
+def write_rating_workbook(df: pd.DataFrame, path: Path, options: list[str]):
+    """Write the rating sheet as an Excel table with a `classification` dropdown."""
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="ratings")
+        sheet = writer.sheets["ratings"]
+
+        last_row = len(df) + 1  # +1 for the header row
+        last_col = get_column_letter(len(RATING_COLS))
+        table = Table(displayName="ratings", ref=f"A1:{last_col}{last_row}")
+        table.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium2",
+            showRowStripes=True,
+        )
+        sheet.add_table(table)
+
+        col_letter = get_column_letter(RATING_COLS.index("classification") + 1)
+        validation = DataValidation(
+            type="list",
+            formula1='"' + ",".join(options) + '"',
+            allow_blank=True,
+            # openpyxl inverts this flag: False renders the in-cell dropdown.
+            showDropDown=False,
+            showErrorMessage=True,
+            errorTitle="Invalid value",
+            error="Pick one of the listed values.",
+        )
+        sheet.add_data_validation(validation)
+        validation.add(f"{col_letter}2:{col_letter}{last_row}")
+
+        for name, width in zip(RATING_COLS, [30, 32, 90, 24, 10]):
+            sheet.column_dimensions[
+                get_column_letter(RATING_COLS.index(name) + 1)
+            ].width = width
+        sheet.freeze_panes = "A2"
+
+
 # ---------------------------------------------------------------------------
 # Summary template
 # ---------------------------------------------------------------------------
@@ -456,7 +542,19 @@ _______________________________________________________________________________
 # ---------------------------------------------------------------------------
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--rater",
+        choices=RATERS,
+        required=True,
+        help="Initials of the human rater filling in the spreadsheets.",
+    )
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
     df = load_data()
 
     part_a = build_part_a(df)
@@ -470,10 +568,19 @@ def main():
     part_b.to_csv(path_b, index=False)
     write_summary_template(path_tmpl, len(part_a), len(part_b))
 
+    rating_a = build_rating_sheet(part_a, args.rater)
+    rating_b = build_rating_sheet(part_b, args.rater)
+    xlsx_a = OUT_DIR / f"part_a_classification_rating_{args.rater}.xlsx"
+    xlsx_b = OUT_DIR / f"part_b_attribution_rating_{args.rater}.xlsx"
+    write_rating_workbook(rating_a, xlsx_a, CLASSIFICATION_OPTIONS)
+    write_rating_workbook(rating_b, xlsx_b, PLATFORM_OPTIONS)
+
     print("\n=== Outputs written ===")
     print(f"  {path_a}  ({len(part_a)} records, {part_a.shape[1]} cols)")
     print(f"  {path_b}  ({len(part_b)} records, {part_b.shape[1]} cols)")
     print(f"  {path_tmpl}")
+    print(f"  {xlsx_a}  ({len(rating_a)} records, rater={args.rater})")
+    print(f"  {xlsx_b}  ({len(rating_b)} records, rater={args.rater})")
 
     print("\n--- Part A strata ---")
     print(part_a["_stratum"].value_counts().sort_index().to_string())
