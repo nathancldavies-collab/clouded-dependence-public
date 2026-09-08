@@ -29,6 +29,7 @@ import pandas as pd
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.table import Table, TableStyleInfo
+from openpyxl.worksheet.worksheet import Worksheet
 
 from clouded_deps.directories import DATA_DIR, OUTPUTS_DIR
 
@@ -96,8 +97,10 @@ RATING_COLS = [
     "contractor",
     "description",
     "classification",
+    "confidence",
     "rater",
 ]
+RATING_COL_WIDTHS = [30, 32, 90, 24, 12, 10]
 
 # Allowed values for the `classification` column of each rating spreadsheet.
 CLASSIFICATION_OPTIONS = [
@@ -105,6 +108,8 @@ CLASSIFICATION_OPTIONS = [
     "cloud-dependent",
     "cloud-infrastructure",
 ]
+# How sure the rater is of their own `classification` call.
+CONFIDENCE_OPTIONS = ["low", "medium", "high"]
 PLATFORM_OPTIONS = [
     "AWS",
     "Azure",
@@ -374,14 +379,32 @@ def build_rating_sheet(sample: pd.DataFrame, rater: str) -> pd.DataFrame:
             "contractor": sample["contractor_name"].values,
             "description": sample[TEXT_COL].values,
             "classification": "",
+            "confidence": "",
             "rater": rater,
         },
         columns=RATING_COLS,
     )
 
 
+def _add_dropdown(sheet: Worksheet, column: str, options: list[str], last_row: int):
+    """Attach an in-cell list validation to one column of the rating table."""
+    col_letter = get_column_letter(RATING_COLS.index(column) + 1)
+    validation = DataValidation(
+        type="list",
+        formula1='"' + ",".join(options) + '"',
+        allow_blank=True,
+        # openpyxl inverts this flag: False renders the in-cell dropdown.
+        showDropDown=False,
+        showErrorMessage=True,
+        errorTitle="Invalid value",
+        error="Pick one of the listed values.",
+    )
+    sheet.add_data_validation(validation)
+    validation.add(f"{col_letter}2:{col_letter}{last_row}")
+
+
 def write_rating_workbook(df: pd.DataFrame, path: Path, options: list[str]):
-    """Write the rating sheet as an Excel table with a `classification` dropdown."""
+    """Write the rating sheet as an Excel table with dropdowns for the rater."""
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="ratings")
         sheet = writer.sheets["ratings"]
@@ -395,21 +418,10 @@ def write_rating_workbook(df: pd.DataFrame, path: Path, options: list[str]):
         )
         sheet.add_table(table)
 
-        col_letter = get_column_letter(RATING_COLS.index("classification") + 1)
-        validation = DataValidation(
-            type="list",
-            formula1='"' + ",".join(options) + '"',
-            allow_blank=True,
-            # openpyxl inverts this flag: False renders the in-cell dropdown.
-            showDropDown=False,
-            showErrorMessage=True,
-            errorTitle="Invalid value",
-            error="Pick one of the listed values.",
-        )
-        sheet.add_data_validation(validation)
-        validation.add(f"{col_letter}2:{col_letter}{last_row}")
+        _add_dropdown(sheet, "classification", options, last_row)
+        _add_dropdown(sheet, "confidence", CONFIDENCE_OPTIONS, last_row)
 
-        for name, width in zip(RATING_COLS, [30, 32, 90, 24, 10]):
+        for name, width in zip(RATING_COLS, RATING_COL_WIDTHS):
             sheet.column_dimensions[
                 get_column_letter(RATING_COLS.index(name) + 1)
             ].width = width

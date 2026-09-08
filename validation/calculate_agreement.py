@@ -11,8 +11,13 @@ Rating files are read through small loaders into one intermediate long format
 (``Ratings``: one row per unit x rater), so supporting a new file layout later
 only means adding a loader to ``LOADERS`` — nothing downstream changes.
 
+Ratings can be filtered by the rater's own confidence (``--confidence``) and,
+for part A, collapsed from the three-way classification to binary cloud /
+non-cloud (``--binary``).
+
 Run from project root:
     uv run validation/calculate_agreement.py --part a
+    uv run validation/calculate_agreement.py --part a --binary --confidence medium high
     uv run validation/calculate_agreement.py --part b --input some/other/file.csv
 """
 
@@ -42,34 +47,49 @@ PART_LABELS = {"a": "classification", "b": "platform"}
 
 MIN_RATERS = 2
 
+# Rater self-reported confidence, ordered from least to most sure.
+CONFIDENCE_LEVELS = ["low", "medium", "high"]
+
+# Part A only: collapse the three-way classification to cloud / non-cloud.
+BINARY_MAP = {
+    "non-cloud": "non-cloud",
+    "cloud-dependent": "cloud",
+    "cloud-infrastructure": "cloud",
+}
+
 # ---------------------------------------------------------------------------
 # Intermediate format
 # ---------------------------------------------------------------------------
 UNIT_COL = "unit_id"
 RATER_COL = "rater"
 LABEL_COL = "label"
-LONG_COLS = [UNIT_COL, RATER_COL, LABEL_COL]
+CONFIDENCE_COL = "confidence"
+LONG_COLS = [UNIT_COL, RATER_COL, LABEL_COL, CONFIDENCE_COL]
+REQUIRED_COLS = [UNIT_COL, RATER_COL, LABEL_COL]
 
 
 @dataclass(frozen=True)
 class Ratings:
     """Long-format ratings: exactly one row per (unit, rater) with a label.
 
-    ``long`` always has the columns ``unit_id``, ``rater``, ``label``; labels are
-    stripped strings and rows with a missing label are dropped by the loaders.
+    ``long`` always has the columns ``unit_id``, ``rater``, ``label`` and
+    ``confidence`` (the rater's own low/medium/high call, possibly missing);
+    labels are stripped strings and rows with a missing label are dropped by
+    the loaders.
     """
 
     long: pd.DataFrame
 
     @classmethod
     def from_frame(cls, df: pd.DataFrame, source: str) -> "Ratings":
-        missing = [c for c in LONG_COLS if c not in df.columns]
+        missing = [c for c in REQUIRED_COLS if c not in df.columns]
         if missing:
             raise ValueError(f"{source}: missing column(s) {', '.join(missing)}")
-        out = df[LONG_COLS].copy()
+        out = df.reindex(columns=LONG_COLS).copy()
         for col in LONG_COLS:
             out[col] = out[col].astype("string").str.strip()
         out = out[out[LABEL_COL].notna() & (out[LABEL_COL] != "")]
+        out[CONFIDENCE_COL] = out[CONFIDENCE_COL].replace("", pd.NA).str.lower()
         return cls(out.reset_index(drop=True))
 
     @property
@@ -97,6 +117,23 @@ class Ratings:
         return Ratings(
             self.long[self.long[RATER_COL].isin(raters)].reset_index(drop=True)
         )
+
+    def filter_confidence(self, levels: list[str]) -> "Ratings":
+        """Keep only ratings the rater marked with one of ``levels``.
+
+        Ratings with no confidence recorded are dropped, since they cannot be
+        shown to meet the filter.
+        """
+        keep = self.long[CONFIDENCE_COL].isin(levels)
+        return Ratings(self.long[keep].reset_index(drop=True))
+
+    def map_labels(self, mapping: dict[str, str]) -> "Ratings":
+        """Recode labels (e.g. collapse to binary); unmapped labels are kept."""
+        out = self.long.copy()
+        out[LABEL_COL] = (
+            out[LABEL_COL].map(lambda v: mapping.get(v, v)).astype("string")
+        )
+        return Ratings(out)
 
 
 def combine(parts: list[Ratings]) -> Ratings:
@@ -139,7 +176,7 @@ def validate(ratings: Ratings) -> list[str]:
     problems = []
 
     if ratings.long.empty:
-        return ["no rated rows found (every `classification` cell was blank)"]
+        return ["no rated rows left (blank `classification` cells, or filtered out)"]
 
     if len(ratings.raters) < MIN_RATERS:
         problems.append(
@@ -167,8 +204,9 @@ def validate(ratings: Ratings) -> list[str]:
 def reliability_matrix(ratings: Ratings) -> np.ndarray:
     """Raters x units matrix of integer label codes, np.nan where uncoded."""
     codes = {label: i for i, label in enumerate(ratings.labels)}
-    wide = ratings.wide().replace(codes)
-    return wide.T.to_numpy(dtype=float)
+    wide = ratings.wide().apply(lambda col: col.map(codes)).astype("Float64")
+    # Units a rater did not code stay missing, which krippendorff ignores.
+    return wide.T.to_numpy(dtype=float, na_value=np.nan)
 
 
 def alpha(ratings: Ratings) -> float:
@@ -202,9 +240,9 @@ def pairwise_alphas(ratings: Ratings) -> dict[tuple[str, str], float | None]:
 # ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
-def report(ratings: Ratings, part: str):
+def report(ratings: Ratings, part: str, scheme: str):
     overlap = ratings.overlapping_units()
-    print(f"\n=== Krippendorff's alpha — part {part.upper()} ({PART_LABELS[part]}) ===")
+    print(f"\n=== Krippendorff's alpha — part {part.upper()} ({scheme}) ===")
     print(f"  Raters:            {', '.join(ratings.raters)}")
     print(f"  Units rated:       {len(ratings.units)}")
     print(f"  Units with >=2 raters: {len(overlap)}")
@@ -254,6 +292,21 @@ def parse_args() -> argparse.Namespace:
         help=f"Directory searched when --input is omitted (default: {RATINGS_DIR}).",
     )
     parser.add_argument(
+        "--confidence",
+        nargs="+",
+        choices=CONFIDENCE_LEVELS,
+        help=(
+            "Keep only ratings the rater marked with these confidence levels "
+            "(default: all; ratings with no confidence recorded are dropped "
+            "when this filter is used)."
+        ),
+    )
+    parser.add_argument(
+        "--binary",
+        action="store_true",
+        help="Part A only: collapse classifications to cloud / non-cloud.",
+    )
+    parser.add_argument(
         "--loader",
         choices=sorted(LOADERS),
         default=DEFAULT_LOADER,
@@ -283,6 +336,31 @@ def main() -> int:
 
     ratings = combine(loaded)
 
+    if args.confidence:
+        before = len(ratings.long)
+        ratings = ratings.filter_confidence(args.confidence)
+        print(
+            f"Confidence filter [{', '.join(args.confidence)}]: "
+            f"kept {len(ratings.long)} of {before} ratings"
+        )
+
+    scheme = PART_LABELS[args.part]
+    if args.binary:
+        if args.part != "a":
+            print(
+                "[error] --binary only applies to part A (classification codes)",
+                file=sys.stderr,
+            )
+            return 1
+        unknown = sorted(set(ratings.labels) - set(BINARY_MAP))
+        if unknown:
+            print(
+                f"[warn] labels left uncollapsed: {', '.join(unknown)}",
+                file=sys.stderr,
+            )
+        ratings = ratings.map_labels(BINARY_MAP)
+        scheme = "classification, binary cloud/non-cloud"
+
     problems = validate(ratings)
     if problems:
         print("\n[error] cannot compute alpha:", file=sys.stderr)
@@ -290,7 +368,7 @@ def main() -> int:
             print(f"  - {problem}", file=sys.stderr)
         return 1
 
-    report(ratings, args.part)
+    report(ratings, args.part, scheme)
     return 0
 
 
