@@ -7,3 +7,6 @@ lint *files=".":
 
 pipeline:
     uv run run_pipeline.py
+
+generate-interrater:
+    uv run validation/build_validation_sample.py --rater ND JR

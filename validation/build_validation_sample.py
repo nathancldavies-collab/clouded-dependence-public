@@ -11,15 +11,18 @@ Generates two stratified CSVs for manual review:
   Part B: Attribution validation (~100 records)
     Stratified by: attribution_method (phase), final_platform
 
-Output files (in outputs_results_v2/validation/):
-  part_a_classification_sample.csv
-  part_b_attribution_sample.csv
-  part_a_classification_rating_<RATER>.xlsx
-  part_b_attribution_rating_<RATER>.xlsx
-  validation_summary_template.md
+Output files (in outputs_results_v2/validation/), tagged with the sample seed:
+  part_a_classification_sample_seed<SEED>.csv
+  part_b_attribution_sample_seed<SEED>.csv
+  part_a_classification_rating_<RATER>_seed<SEED>.xlsx
+  part_b_attribution_rating_<RATER>_seed<SEED>.xlsx
+  validation_summary_template_seed<SEED>.md
+
+Existing files are never overwritten unless --overwrite is passed.
 
 Usage:
   uv run validation/build_validation_sample.py --rater JR
+  uv run validation/build_validation_sample.py --rater JR ND --seed 42
 """
 
 import argparse
@@ -40,7 +43,7 @@ DATA_FILE = DATA_DIR / "02_processed" / "03_classified" / "attributed_dataset.cs
 OUT_DIR = OUTPUTS_DIR / "validation"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-RANDOM_SEED = 42
+RANDOM_SEED = 110  # default; override with --seed
 
 # ---------------------------------------------------------------------------
 # Column groups
@@ -132,14 +135,14 @@ ALL_SOURCE_COLS = (
 # ---------------------------------------------------------------------------
 
 
-def safe_sample(df: pd.DataFrame, n: int, label: str) -> pd.DataFrame:
+def safe_sample(df: pd.DataFrame, n: int, label: str, seed: int) -> pd.DataFrame:
     """Sample up to n rows; warn if fewer available."""
     actual = min(n, len(df))
     if actual < n:
         print(f"  [warn] '{label}': requested {n}, only {actual} available")
     if actual == 0:
         return pd.DataFrame(columns=df.columns)
-    return df.sample(n=actual, random_state=RANDOM_SEED)
+    return df.sample(n=actual, random_state=seed)
 
 
 def load_data() -> pd.DataFrame:
@@ -167,7 +170,7 @@ def already_selected(frames: list) -> pd.Series:
 # ---------------------------------------------------------------------------
 
 
-def build_part_a(df: pd.DataFrame) -> pd.DataFrame:
+def build_part_a(df: pd.DataFrame, seed: int) -> pd.DataFrame:
     """
     Stratified sample designed to surface the cases most likely to be wrong:
 
@@ -183,7 +186,7 @@ def build_part_a(df: pd.DataFrame) -> pd.DataFrame:
 
     # Stratum 1: conflict
     conflict = df[df["classification_source"] == "conflict"]
-    s = safe_sample(conflict, 30, "conflict")
+    s = safe_sample(conflict, 30, "conflict", seed)
     s["_stratum"] = "1_conflict_regex_llm"
     frames.append(s)
     print(
@@ -193,7 +196,7 @@ def build_part_a(df: pd.DataFrame) -> pd.DataFrame:
     # Stratum 2: LLM-only
     llm_only = df[df["classification_source"] == "llm_only"]
     llm_only = llm_only[~llm_only["original_prime_id"].isin(already_selected(frames))]
-    s = safe_sample(llm_only, 25, "llm_only")
+    s = safe_sample(llm_only, 25, "llm_only", seed)
     s["_stratum"] = "2_llm_only"
     frames.append(s)
     print(
@@ -206,7 +209,7 @@ def build_part_a(df: pd.DataFrame) -> pd.DataFrame:
         & df["classification_confidence"].isin(["low", "conflict"])
     ]
     low_conf = low_conf[~low_conf["original_prime_id"].isin(already_selected(frames))]
-    s = safe_sample(low_conf, 25, "low_conf_cloud")
+    s = safe_sample(low_conf, 25, "low_conf_cloud", seed)
     s["_stratum"] = "3_low_confidence_cloud"
     frames.append(s)
     print(
@@ -216,7 +219,7 @@ def build_part_a(df: pd.DataFrame) -> pd.DataFrame:
     # Stratum 4: cloud-infrastructure (minority class)
     infra = df[df["cloud_classification"] == "cloud-infrastructure"]
     infra = infra[~infra["original_prime_id"].isin(already_selected(frames))]
-    s = safe_sample(infra, 25, "cloud-infrastructure")
+    s = safe_sample(infra, 25, "cloud-infrastructure", seed)
     s["_stratum"] = "4_cloud_infrastructure"
     frames.append(s)
     print(
@@ -232,7 +235,7 @@ def build_part_a(df: pd.DataFrame) -> pd.DataFrame:
     cdep_high = cdep_high[
         ~cdep_high["original_prime_id"].isin(already_selected(frames))
     ]
-    s = safe_sample(cdep_high, 25, "cloud_dep_high")
+    s = safe_sample(cdep_high, 25, "cloud_dep_high", seed)
     s["_stratum"] = "5_cloud_dependent_high_conf"
     frames.append(s)
     print(
@@ -244,7 +247,7 @@ def build_part_a(df: pd.DataFrame) -> pd.DataFrame:
     non_cloud = non_cloud[
         ~non_cloud["original_prime_id"].isin(already_selected(frames))
     ]
-    s = safe_sample(non_cloud, 45, "non_cloud")
+    s = safe_sample(non_cloud, 45, "non_cloud", seed)
     s["_stratum"] = "6_non_cloud_baseline"
     frames.append(s)
     print(
@@ -269,7 +272,7 @@ def build_part_a(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 
 
-def build_part_b(df: pd.DataFrame) -> pd.DataFrame:
+def build_part_b(df: pd.DataFrame, seed: int) -> pd.DataFrame:
     """
     Cloud records only, stratified by attribution phase and platform coverage:
 
@@ -287,7 +290,7 @@ def build_part_b(df: pd.DataFrame) -> pd.DataFrame:
 
     # Phase 1
     p1 = cloud[cloud["attribution_method"] == "phase1_direct"]
-    s = safe_sample(p1, 15, "phase1")
+    s = safe_sample(p1, 15, "phase1", seed)
     s["_stratum"] = "1_phase1_direct_entity"
     frames.append(s)
     print(f"  Phase 1 (direct entity):             {len(p1):,} pool → {len(s)} sampled")
@@ -298,7 +301,7 @@ def build_part_b(df: pd.DataFrame) -> pd.DataFrame:
         & (cloud["classification_confidence"].isin(["high", "medium"]))
     ]
     p2h = p2h[~p2h["original_prime_id"].isin(already_selected(frames))]
-    s = safe_sample(p2h, 15, "phase2_high")
+    s = safe_sample(p2h, 15, "phase2_high", seed)
     s["_stratum"] = "2_phase2_description_highmed"
     frames.append(s)
 
@@ -308,7 +311,7 @@ def build_part_b(df: pd.DataFrame) -> pd.DataFrame:
         & (cloud["classification_confidence"].isin(["low", "conflict"]))
     ]
     p2l = p2l[~p2l["original_prime_id"].isin(already_selected(frames))]
-    s = safe_sample(p2l, 10, "phase2_low")
+    s = safe_sample(p2l, 10, "phase2_low", seed)
     s["_stratum"] = "3_phase2_description_lowconf"
     frames.append(s)
     print(
@@ -318,7 +321,7 @@ def build_part_b(df: pd.DataFrame) -> pd.DataFrame:
     # Phase 3
     p3 = cloud[cloud["attribution_method"] == "phase3_pattern"]
     p3 = p3[~p3["original_prime_id"].isin(already_selected(frames))]
-    s = safe_sample(p3, 20, "phase3")
+    s = safe_sample(p3, 20, "phase3", seed)
     s["_stratum"] = "4_phase3_pattern_inferred"
     frames.append(s)
     print(f"  Phase 3 (pattern inferred):          {len(p3):,} pool → {len(s)} sampled")
@@ -326,7 +329,7 @@ def build_part_b(df: pd.DataFrame) -> pd.DataFrame:
     # Unattributed cloud
     unattr = cloud[cloud["attribution_method"] == "cloud_unattributed_contractor"]
     unattr = unattr[~unattr["original_prime_id"].isin(already_selected(frames))]
-    s = safe_sample(unattr, 20, "unattributed")
+    s = safe_sample(unattr, 20, "unattributed", seed)
     s["_stratum"] = "5_unattributed_cloud"
     frames.append(s)
     print(
@@ -352,7 +355,7 @@ def build_part_b(df: pd.DataFrame) -> pd.DataFrame:
                 (cloud["final_platform"] == platform)
                 & (~cloud["original_prime_id"].isin(so_far["original_prime_id"]))
             ]
-            s = safe_sample(pool, 3 - have, f"topup_{platform}")
+            s = safe_sample(pool, 3 - have, f"topup_{platform}", seed)
             if len(s):
                 s["_stratum"] = f"6_platform_topup_{platform}"
                 frames.append(s)
@@ -554,45 +557,101 @@ _______________________________________________________________________________
 # ---------------------------------------------------------------------------
 
 
+def output_paths(raters: list[str], seed: int) -> dict[str, Path]:
+    """Every file this script writes, keyed by role and tagged with the seed.
+
+    All raters review the same sample, so only the workbooks are per-rater.
+    """
+    paths = {
+        "csv_a": OUT_DIR / f"part_a_classification_sample_seed{seed}.csv",
+        "csv_b": OUT_DIR / f"part_b_attribution_sample_seed{seed}.csv",
+        "template": OUT_DIR / f"validation_summary_template_seed{seed}.md",
+    }
+    for rater in raters:
+        paths[f"xlsx_a_{rater}"] = (
+            OUT_DIR / f"part_a_classification_rating_{rater}_seed{seed}.xlsx"
+        )
+        paths[f"xlsx_b_{rater}"] = (
+            OUT_DIR / f"part_b_attribution_rating_{rater}_seed{seed}.xlsx"
+        )
+    return paths
+
+
+def check_overwrite(paths: dict[str, Path], overwrite: bool) -> list[Path]:
+    """Return the outputs that already exist, unless overwriting is allowed."""
+    if overwrite:
+        return []
+    return [path for path in paths.values() if path.exists()]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--rater",
+        nargs="+",
         choices=RATERS,
         required=True,
-        help="Initials of the human rater filling in the spreadsheets.",
+        help="Initials of the human rater(s); one workbook pair is built per rater.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=RANDOM_SEED,
+        help=f"Sampling seed, also written into the filenames (default: {RANDOM_SEED}).",
+    )
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Replace existing output files (refused by default).",
     )
     return parser.parse_args()
 
 
-def main():
+def main() -> int:
     args = parse_args()
+
+    raters = list(dict.fromkeys(args.rater))  # de-duplicate, keep order
+    paths = output_paths(raters, args.seed)
+    existing = check_overwrite(paths, args.overwrite)
+    if existing:
+        print("[error] output file(s) already exist; pass --overwrite to replace:")
+        for path in existing:
+            print(f"  {path}")
+        return 1
+
     df = load_data()
 
-    part_a = build_part_a(df)
-    part_b = build_part_b(df)
+    part_a = build_part_a(df, args.seed)
+    part_b = build_part_b(df, args.seed)
 
-    path_a = OUT_DIR / "part_a_classification_sample.csv"
-    path_b = OUT_DIR / "part_b_attribution_sample.csv"
-    path_tmpl = OUT_DIR / "validation_summary_template.md"
+    path_a = paths["csv_a"]
+    path_b = paths["csv_b"]
+    path_tmpl = paths["template"]
 
     part_a.to_csv(path_a, index=False)
     part_b.to_csv(path_b, index=False)
     write_summary_template(path_tmpl, len(part_a), len(part_b))
 
-    rating_a = build_rating_sheet(part_a, args.rater)
-    rating_b = build_rating_sheet(part_b, args.rater)
-    xlsx_a = OUT_DIR / f"part_a_classification_rating_{args.rater}.xlsx"
-    xlsx_b = OUT_DIR / f"part_b_attribution_rating_{args.rater}.xlsx"
-    write_rating_workbook(rating_a, xlsx_a, CLASSIFICATION_OPTIONS)
-    write_rating_workbook(rating_b, xlsx_b, PLATFORM_OPTIONS)
+    workbooks = []
+    for rater in raters:
+        xlsx_a = paths[f"xlsx_a_{rater}"]
+        xlsx_b = paths[f"xlsx_b_{rater}"]
+        write_rating_workbook(
+            build_rating_sheet(part_a, rater), xlsx_a, CLASSIFICATION_OPTIONS
+        )
+        write_rating_workbook(
+            build_rating_sheet(part_b, rater), xlsx_b, PLATFORM_OPTIONS
+        )
+        workbooks.append((rater, xlsx_a, xlsx_b))
 
     print("\n=== Outputs written ===")
     print(f"  {path_a}  ({len(part_a)} records, {part_a.shape[1]} cols)")
     print(f"  {path_b}  ({len(part_b)} records, {part_b.shape[1]} cols)")
     print(f"  {path_tmpl}")
-    print(f"  {xlsx_a}  ({len(rating_a)} records, rater={args.rater})")
-    print(f"  {xlsx_b}  ({len(rating_b)} records, rater={args.rater})")
+    for rater, xlsx_a, xlsx_b in workbooks:
+        print(f"  {xlsx_a}  ({len(part_a)} records, rater={rater})")
+        print(f"  {xlsx_b}  ({len(part_b)} records, rater={rater})")
+    print(f"  seed: {args.seed}")
 
     print("\n--- Part A strata ---")
     print(part_a["_stratum"].value_counts().sort_index().to_string())
@@ -600,7 +659,8 @@ def main():
     print(part_b["_stratum"].value_counts().sort_index().to_string())
     print("\n--- Part B platform coverage ---")
     print(part_b["final_platform"].value_counts().head(20).to_string())
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

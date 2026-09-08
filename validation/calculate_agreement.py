@@ -38,10 +38,11 @@ from clouded_deps.directories import OUTPUTS_DIR
 # ---------------------------------------------------------------------------
 RATINGS_DIR = OUTPUTS_DIR / "validation"
 
-# Filename globs used when no explicit --input is given.
-PART_GLOBS = {
-    "a": "part_a_classification_rating_*.xlsx",
-    "b": "part_b_attribution_rating_*.xlsx",
+# Filename stems used when no explicit --input is given; build_validation_sample
+# writes "<stem>_<RATER>_seed<SEED>.xlsx".
+PART_STEMS = {
+    "a": "part_a_classification_rating",
+    "b": "part_b_attribution_rating",
 }
 PART_LABELS = {"a": "classification", "b": "platform"}
 
@@ -272,13 +273,19 @@ def report(ratings: Ratings, part: str, scheme: str):
 def resolve_inputs(args: argparse.Namespace) -> list[Path]:
     if args.input:
         return [Path(p) for p in args.input]
-    return sorted(args.ratings_dir.glob(PART_GLOBS[args.part]))
+    suffix = f"*_seed{args.seed}.xlsx" if args.seed is not None else "*.xlsx"
+    return sorted(args.ratings_dir.glob(f"{PART_STEMS[args.part]}_{suffix}"))
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--part", choices=sorted(PART_GLOBS), required=True, help="Validation part."
+        "--part", choices=sorted(PART_STEMS), required=True, help="Validation part."
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        help="Only read rating files built with this sample seed (default: any).",
     )
     parser.add_argument(
         "--input",
