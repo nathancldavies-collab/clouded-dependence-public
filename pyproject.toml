@@ -16,3 +16,10 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-name = "clouded_deps"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.2",
+    "ruff>=0.16.6",
+    "ty>=0.0.79",
+]
