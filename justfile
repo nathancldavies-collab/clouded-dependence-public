@@ -1,6 +1,6 @@
 install:
     uv sync
 
-lint:
-    uv run ruff check --fix .
-    uv run ruff format .
+lint *files=".":
+    uv run ruff check --fix {{files}}
+    uv run ruff format {{files}}
