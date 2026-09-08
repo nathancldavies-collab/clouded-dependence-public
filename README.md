@@ -90,7 +90,7 @@ clouded-dependence-public/
 │       ├── refresh_outputs_calendar_year.py  # Calendar-year figures + tables
 │       └── 04_platform_hhi.ipynb
 │
-└── tests/
+└── validation/
     ├── prompt_comparison_test.py    # LLM prompt A/B test on small sample
     └── build_validation_sample.py  # Stratified human-validation sampler
 ```
