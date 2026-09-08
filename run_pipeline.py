@@ -24,71 +24,36 @@ Run from project root:
 """
 
 import argparse
-import importlib.util
 import os
 import sys
 import time
-from pathlib import Path
-from types import ModuleType
 
-import numpy as np
 import pandas as pd
 
-from clouded_deps.directories import DATA_DIR, PIPELINE_DIR, ROOT
+from clouded_deps.directories import DATA_DIR, ROOT
+from clouded_deps.pipeline import cloud_classification
+from clouded_deps.pipeline.baseline_merged_hhi import (
+    calculate_hhi,
+    classify_hhi,
+    compare_baseline_approaches,
+)
+from clouded_deps.pipeline.cloud_classification import run_stage1
+from clouded_deps.pipeline.create_merged_dataset import (
+    create_merged_dataset,
+    dedupe_primes_by_award,
+    load_primes,
+    load_subs,
+    print_merge_summary,
+    verify_merged_dataset,
+)
+from clouded_deps.pipeline.filter_primes import filter_primes
+from clouded_deps.pipeline.platform_attribution import (
+    expand_platform_mentions,
+    run_stage2,
+)
 
 # If LLM cache exists, avoid rebuilding merged dataset to preserve alignment
 FREEZE_MERGED_IF_LLM_CACHE = True
-
-
-def _import_module(name: str, filepath: Path) -> ModuleType:
-    """Import a module from an arbitrary file path."""
-    spec = importlib.util.spec_from_file_location(name, filepath)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-# Import modules from directories with numeric prefixes (not valid Python packages)
-_merge_mod = _import_module(
-    "create_merged_dataset",
-    PIPELINE_DIR / "01_prep" / "create_merged_dataset.py",
-)
-_filter_mod = _import_module(
-    "filter_primes",
-    PIPELINE_DIR / "01_prep" / "filter_primes.py",
-)
-_baseline_mod = _import_module(
-    "baseline_merged_hhi",
-    PIPELINE_DIR / "02_base_analysis" / "baseline_merged_hhi.py",
-)
-_classification_mod = _import_module(
-    "cloud_classification",
-    PIPELINE_DIR / "03_classification" / "cloud_classification.py",
-)
-_attribution_mod = _import_module(
-    "platform_attribution",
-    PIPELINE_DIR / "04_attribution" / "platform_attribution.py",
-)
-
-# Re-export functions
-load_primes = _merge_mod.load_primes
-load_subs = _merge_mod.load_subs
-create_merged_dataset = _merge_mod.create_merged_dataset
-verify_merged_dataset = _merge_mod.verify_merged_dataset
-print_merge_summary = _merge_mod.print_merge_summary
-dedupe_primes_by_award = _merge_mod.dedupe_primes_by_award
-
-filter_primes = _filter_mod.filter_primes
-
-calculate_contractor_hhi = _baseline_mod.calculate_contractor_hhi
-compare_baseline_approaches = _baseline_mod.compare_baseline_approaches
-calculate_hhi = _baseline_mod.calculate_hhi
-classify_hhi = _baseline_mod.classify_hhi
-
-run_stage1 = _classification_mod.run_stage1
-run_stage2 = _attribution_mod.run_stage2
-calculate_platform_hhi = _attribution_mod.calculate_platform_hhi
-expand_platform_mentions = _attribution_mod.expand_platform_mentions
 
 
 def run_full_pipeline(run_llm: bool = False):
@@ -164,8 +129,8 @@ def run_full_pipeline(run_llm: bool = False):
         print("#" * 80)
         print("  NOTE: Freeze enabled to preserve LLM alignment.")
 
-        primes_df = _classification_mod.safe_read_csv(filtered_path)
-        merged_df = _classification_mod.safe_read_csv(merged_path)
+        primes_df = cloud_classification.safe_read_csv(filtered_path)
+        merged_df = cloud_classification.safe_read_csv(merged_path)
         filter_summary = {
             "baseline_count": len(primes_df),
             "after_keyword_count": len(primes_df),
@@ -271,7 +236,7 @@ def run_full_pipeline(run_llm: bool = False):
     )
     classified_df_strict = None
     if has_llm:
-        classified_df_strict = _classification_mod.synthesize_classification(
+        classified_df_strict = cloud_classification.synthesize_classification(
             classified_df.copy(),
             conflict_mode="llm_strict",
             noncloud_override_confidence="high",
