@@ -674,6 +674,65 @@ def leaderboard(
     return pd.DataFrame(rows)
 
 
+def barbell_data(
+    normal: pd.Series,
+    clouded: pd.Series,
+    labels: dict[str, str],
+    population_size: int,
+    top: int = 15,
+) -> pd.DataFrame:
+    """
+    Paired exposure for a barbell plot: one row per node, both endpoints on it.
+
+    Nodes are the UNION of the top `top` in either view, so a node that ranks highly
+    only in the clouded view still carries its normal-view value (and vice versa) —
+    which `leaderboard()` cannot give, since it truncates each view independently.
+
+    `in_top_normal` / `in_top_clouded` record which view put the node in scope, so a
+    facet can shade or annotate the ones that are new to the clouded ranking.
+
+    Returns:
+        DataFrame sorted by clouded exposure descending, with columns
+        [node, label, is_platform, normal, clouded, normal_count, clouded_count,
+         delta, delta_count, ratio, rank_normal, rank_clouded,
+         in_top_normal, in_top_clouded].
+    """
+    top_normal = list(normal.sort_values(ascending=False).head(top).index)
+    top_clouded = list(clouded.sort_values(ascending=False).head(top).index)
+    selected = set(top_normal) | set(top_clouded)
+
+    rank_normal = normal.rank(ascending=False, method="min")
+    rank_clouded = clouded.rank(ascending=False, method="min")
+
+    rows = []
+    for node in selected:
+        share_n = float(normal.get(node, 0.0))
+        share_c = float(clouded.get(node, 0.0))
+        rows.append(
+            {
+                "node": node,
+                "label": display_label(node, labels),
+                "is_platform": is_platform_node(node),
+                "normal": share_n,
+                "clouded": share_c,
+                "normal_count": round(share_n * population_size),
+                "clouded_count": round(share_c * population_size),
+                "delta": share_c - share_n,
+                "delta_count": round((share_c - share_n) * population_size),
+                "ratio": (share_c / share_n) if share_n > 0 else np.nan,
+                "rank_normal": int(rank_normal[node]),
+                "rank_clouded": int(rank_clouded[node]),
+                "in_top_normal": node in set(top_normal),
+                "in_top_clouded": node in set(top_clouded),
+            }
+        )
+    return (
+        pd.DataFrame(rows)
+        .sort_values("clouded", ascending=False)
+        .reset_index(drop=True)
+    )
+
+
 def platform_table(
     normal: pd.Series, clouded: pd.Series, population_size: int
 ) -> pd.DataFrame:

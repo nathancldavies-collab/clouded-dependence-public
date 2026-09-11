@@ -13,3 +13,6 @@ generate-interrater:
 
 exposure *args:
     uv run run_exposure_analysis.py {{args}}
+
+plot-exposure *args:
+    uv run plot_exposure_barbell.py {{args}}

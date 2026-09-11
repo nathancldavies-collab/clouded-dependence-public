@@ -163,6 +163,7 @@ def run_exposure_analysis(k: int = 2, top: int = 15, analysis: str = "both") -> 
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
     summaries: list[dict] = []
+    barbells: list[pd.DataFrame] = []
 
     # --- Analysis 2: contract exposure --------------------------------------
     if analysis in ("contract", "both"):
@@ -206,6 +207,11 @@ def run_exposure_analysis(k: int = 2, top: int = 15, analysis: str = "both") -> 
                     {"analysis": "contract", "spec": spec, "view": view, **summary}
                 )
 
+            barbell = ex.barbell_data(normal, clouded, labels, len(population), top=top)
+            barbell.insert(0, "analysis", "contract")
+            barbell.insert(1, "spec", spec)
+            barbells.append(barbell)
+
             board_path = out_dir / f"leaderboard_contract_{spec}.csv"
             table_path = out_dir / f"exposure_by_platform_{spec}.csv"
             board.to_csv(board_path, index=False)
@@ -241,11 +247,33 @@ def run_exposure_analysis(k: int = 2, top: int = 15, analysis: str = "both") -> 
                 {"analysis": "entity", "spec": "permissive", "view": view, **summary}
             )
 
+        barbell = ex.barbell_data(normal, clouded, labels, len(nodes) - 1, top=top)
+        barbell.insert(0, "analysis", "entity")
+        barbell.insert(1, "spec", "permissive")
+        barbells.append(barbell)
+
         board_path = out_dir / "leaderboard_entity.csv"
         table_path = out_dir / "exposure_by_platform_entity.csv"
         board.to_csv(board_path, index=False)
         table.to_csv(table_path, index=False)
         written += [board_path.name, table_path.name]
+
+    if barbells:
+        barbell_path = out_dir / "barbell_data.csv"
+        combined = pd.concat(barbells, ignore_index=True)
+        combined.to_csv(barbell_path, index=False)
+        written.append(barbell_path.name)
+        print("\n\n" + "#" * 80)
+        print("# BARBELL PLOT DATA")
+        print("#" * 80)
+        print(
+            f"\n  {len(combined):,} rows across {combined['analysis'].nunique()} "
+            f"analysis/spec facet(s): the union of each view's top {top}, with both"
+        )
+        print("  endpoints on one row so nodes ranking highly in only one view keep")
+        print("  their counterpart value. Facet on [analysis, spec]; plot normal ->")
+        print("  clouded per label; `in_top_normal` / `in_top_clouded` mark which view")
+        print("  put each node in scope.")
 
     summary_path = out_dir / "exposure_summary.csv"
     pd.DataFrame(summaries).to_csv(summary_path, index=False)

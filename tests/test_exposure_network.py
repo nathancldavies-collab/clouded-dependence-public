@@ -283,3 +283,64 @@ def test_entity_parity_on_fixture(graph: nx.DiGraph, nodes: list[str]) -> None:
         for target in nodes:
             slow = ex.entity_exposure_networkx(graph, target, k=k)
             assert fast[target] * (len(nodes) - 1) == pytest.approx(slow), (k, target)
+
+
+# ---------------------------------------------------------------------------
+# Barbell (paired) output
+# ---------------------------------------------------------------------------
+
+
+def _paired() -> tuple[pd.Series, pd.Series, dict[str, str]]:
+    """Two views whose top-2 sets overlap in only one node."""
+    normal = pd.Series({"A": 0.50, "B": 0.40, "C": 0.10, "D": 0.00})
+    clouded = pd.Series({"A": 0.50, "B": 0.45, "C": 0.90, "D": 0.80})
+    return normal, clouded, {"A": "Alpha", "B": "Beta", "C": "Gamma", "D": "Delta"}
+
+
+def test_barbell_takes_union_of_both_top_sets() -> None:
+    """A node in only one view's top-N still appears, with both endpoints."""
+    normal, clouded, labels = _paired()
+    out = ex.barbell_data(normal, clouded, labels, population_size=100, top=2)
+    # normal top-2 = {A, B}; clouded top-2 = {C, D}; union has all four.
+    assert set(out["node"]) == {"A", "B", "C", "D"}
+    assert len(out) == 4
+
+
+def test_barbell_carries_counterpart_values() -> None:
+    """Nodes present only in the clouded top-N keep their normal-view value."""
+    normal, clouded, labels = _paired()
+    out = ex.barbell_data(normal, clouded, labels, population_size=100, top=2)
+    row = out[out["node"] == "D"].iloc[0]
+    assert row["normal"] == pytest.approx(0.0)  # not in normal's top 2
+    assert row["clouded"] == pytest.approx(0.8)
+    assert not row["in_top_normal"]
+    assert row["in_top_clouded"]
+
+
+def test_barbell_counts_and_deltas() -> None:
+    """Counts scale by the population and deltas are clouded minus normal."""
+    normal, clouded, labels = _paired()
+    out = ex.barbell_data(normal, clouded, labels, population_size=100, top=4)
+    row = out[out["node"] == "C"].iloc[0]
+    assert row["normal_count"] == 10
+    assert row["clouded_count"] == 90
+    assert row["delta_count"] == 80
+    assert row["ratio"] == pytest.approx(9.0)
+    assert row["label"] == "Gamma"
+
+
+def test_barbell_ranks_come_from_the_full_series() -> None:
+    """Ranks reflect position across all nodes, not just the selected union."""
+    normal, clouded, labels = _paired()
+    out = ex.barbell_data(normal, clouded, labels, population_size=100, top=2)
+    ranks = out.set_index("node")
+    assert ranks.loc["A", "rank_normal"] == 1
+    assert ranks.loc["C", "rank_clouded"] == 1
+    assert ranks.loc["C", "rank_normal"] == 3
+
+
+def test_barbell_ratio_is_nan_when_normal_is_zero() -> None:
+    """A node invisible in the normal view has no finite ratio."""
+    normal, clouded, labels = _paired()
+    out = ex.barbell_data(normal, clouded, labels, population_size=100, top=4)
+    assert pd.isna(out[out["node"] == "D"].iloc[0]["ratio"])
