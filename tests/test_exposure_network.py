@@ -3,6 +3,7 @@
 from itertools import pairwise
 
 import networkx as nx
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -344,3 +345,92 @@ def test_barbell_ratio_is_nan_when_normal_is_zero() -> None:
     normal, clouded, labels = _paired()
     out = ex.barbell_data(normal, clouded, labels, population_size=100, top=4)
     assert pd.isna(out[out["node"] == "D"].iloc[0]["ratio"])
+
+
+# ---------------------------------------------------------------------------
+# Exposed contract value (weighted readout)
+# ---------------------------------------------------------------------------
+
+
+def test_unit_weights_reproduce_the_count_exactly(
+    graph: nx.DiGraph,
+    nodes: list[str],
+    population: pd.DataFrame,
+    deps: pd.DataFrame,
+) -> None:
+    """`weights = ones` must recover I_k -- the two readouts are one measure."""
+    ones_c = np.ones(len(population))
+    ones_e = np.ones(len(nodes))
+    for k in (1, 2, 3):
+        counts = ex.contract_exposure(graph, nodes, population, deps, k=k)
+        weighted = ex.contract_exposure(
+            graph, nodes, population, deps, k=k, weights=ones_c
+        )
+        assert np.allclose(counts.to_numpy(), weighted.to_numpy())
+
+        ent_counts = ex.entity_exposure(graph, nodes, k=k)
+        ent_weighted = ex.entity_exposure(graph, nodes, k=k, weights=ones_e)
+        # Entity count divides by |V| - 1, the weighted form by sum(w) = |V|.
+        assert np.allclose(
+            ent_counts.to_numpy() * (len(nodes) - 1),
+            ent_weighted.to_numpy() * len(nodes),
+        )
+
+
+def test_value_readout_weights_by_award_size(
+    graph: nx.DiGraph,
+    nodes: list[str],
+    population: pd.DataFrame,
+    deps: pd.DataFrame,
+) -> None:
+    """A large exposed award moves S_k far more than a small one moves it."""
+    # C2 and C3 are Azure-exposed at k=1; make C2 dominate by value.
+    weights = np.array([1.0, 97.0, 1.0, 1.0])  # C1, C2, C3, C4
+    value = ex.contract_exposure(graph, nodes, population, deps, k=1, weights=weights)
+    count = ex.contract_exposure(graph, nodes, population, deps, k=1)
+    # By count Azure sits atop 2 of 4 contracts; by value, 98 of 100 dollars.
+    assert count[AZURE] == pytest.approx(0.5)
+    assert value[AZURE] == pytest.approx(0.98)
+
+
+def test_value_readout_excludes_a_nodes_own_contracts(
+    graph: nx.DiGraph,
+    nodes: list[str],
+    population: pd.DataFrame,
+    deps: pd.DataFrame,
+) -> None:
+    """Self-exclusion carries over to the weighted form (plan section 3.6)."""
+    # A performs C1 and C4; give them all the value. A's own value must not count.
+    weights = np.array([50.0, 0.0, 0.0, 50.0])
+    value = ex.contract_exposure(
+        graph, nodes, population, deps, k=3, spec="permissive", weights=weights
+    )
+    assert value["A"] == pytest.approx(0.0)
+
+
+def test_negative_award_values_are_clamped(population: pd.DataFrame) -> None:
+    """A negative obligation must never reduce an exposure total."""
+    primes = pd.DataFrame(
+        {
+            "Award ID": ["C1", "C2", "C3", "C4"],
+            "Total Dollars Obligated": [100.0, -25.0, 0.0, 50.0],
+        }
+    )
+    weights = ex.build_contract_weights(primes, population)
+    assert (weights >= 0).all()
+    assert weights.tolist() == [100.0, 0.0, 0.0, 50.0]
+
+
+def test_entity_weights_align_to_node_order(nodes: list[str]) -> None:
+    """Entity weights come back in `nodes` order, with absent nodes at zero."""
+    attributed = pd.DataFrame(
+        {
+            "contractor": ["A", "A", "B", "ZZZ"],
+            "dollars": [10.0, 5.0, 7.0, 99.0],
+        }
+    )
+    weights = ex.build_entity_weights(attributed, alias={}, nodes=nodes)
+    by_node = dict(zip(nodes, weights))
+    assert by_node["A"] == pytest.approx(15.0)
+    assert by_node["B"] == pytest.approx(7.0)
+    assert by_node["C"] == pytest.approx(0.0)  # present as a node, absent from data

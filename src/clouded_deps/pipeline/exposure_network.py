@@ -243,6 +243,58 @@ def build_contract_population(
     return df[["contract_id", "performing_node"]].reset_index(drop=True)
 
 
+def build_contract_weights(
+    primes_df: pd.DataFrame, population: pd.DataFrame
+) -> np.ndarray:
+    """
+    Award value per contract, aligned to `population` row order.
+
+    IMPORTANT -- the whole-award assumption. Exposed contract value counts the FULL
+    value of every award standing in a dependency relation to a node, not the portion
+    attributable to that dependency. A $50M award whose $2M subcontract runs on Azure
+    contributes its full $50M. The measure answers "how much contract value sits atop
+    this node", NOT "how much money depends on it" (plan NQ5).
+
+    Negative obligations (20 awards, -$5M against $237B) are clamped to zero: a
+    negative weight would let an award *reduce* an exposure total, which is
+    meaningless for a set-membership measure.
+    """
+    values = (
+        primes_df.drop_duplicates("Award ID")
+        .set_index("Award ID")["Total Dollars Obligated"]
+        .reindex(population["contract_id"])
+        .fillna(0.0)
+        .clip(lower=0.0)
+    )
+    return values.to_numpy(dtype=float)
+
+
+def build_entity_weights(
+    attributed_df: pd.DataFrame, alias: dict[str, str], nodes: list[str]
+) -> np.ndarray:
+    """
+    Dollars held by each entity, aligned to `nodes` order.
+
+    Uses the merged decomposition (prime retained + subcontract flows), which
+    conserves the same $237.43B total as the contract weights -- so entity-level and
+    contract-level value shares are directly comparable, which the count metric can
+    never be (189,134 contracts vs 13,364 entities).
+
+    At entity level the quantity reads as "obligations held by entities within k tiers
+    of v" (plan NQ7).
+    """
+    node_of = attributed_df["contractor"].map(lambda c: alias.get(c, c))
+    totals = (
+        attributed_df.assign(_node=node_of)
+        .groupby("_node")["dollars"]
+        .sum()
+        .clip(lower=0.0)
+        .reindex(nodes)
+        .fillna(0.0)
+    )
+    return totals.to_numpy(dtype=float)
+
+
 def _cloud_platforms_per_record(attributed_df: pd.DataFrame) -> pd.Series:
     """
     Platforms each cloud record depends on: final_platform plus platform_mentions.
@@ -462,24 +514,45 @@ def _incidence(
 # =============================================================================
 
 
-def entity_exposure(graph: nx.DiGraph, nodes: list[str], k: int) -> pd.Series:
+def entity_exposure(
+    graph: nx.DiGraph,
+    nodes: list[str],
+    k: int,
+    weights: np.ndarray | None = None,
+) -> pd.Series:
     """
-    I_k(v) over the entity population, for every node at once.
+    Exposure over the entity population, for every node at once.
 
     Entity exposure is permissive by construction: the entity graph has no contracts
     to confine propagation to, so the conservative/permissive distinction does not
-    arise (plan NQ1).
+    arise. At entity level that aggregation is the unit of analysis rather than an
+    assumption layered on it (plan section 3.3).
+
+    Args:
+        graph: entity graph for the view being scored.
+        nodes: node order shared by every matrix and series.
+        k: tier depth.
+        weights: per-entity weight aligned to `nodes`. None gives the count readout
+            I_k; `build_entity_weights(...)` gives exposed contract value S_k. The
+            count case is exactly `weights = ones`, so the two are one measure.
 
     Returns:
-        Series indexed by node, values in [0, 1]. Self is excluded from both the
-        numerator and the denominator (|V| - 1), per the PDF's "other nodes".
+        Series indexed by node, values in [0, 1]. Self is excluded from the numerator,
+        per the PDF's "other nodes".
     """
     reach = reachability_matrices(graph, nodes, k)
     within = reach[k].tolil()
     within.setdiag(False)
-    counts = np.asarray(within.tocsr().sum(axis=0)).ravel()
-    denominator = max(len(nodes) - 1, 1)
-    return pd.Series(counts / denominator, index=nodes, name=f"I{k}")
+    within = within.tocsr()
+    if weights is None:
+        totals = np.asarray(within.sum(axis=0)).ravel()
+        denominator = max(len(nodes) - 1, 1)
+    else:
+        totals = within.T @ weights
+        denominator = weights.sum()
+    denominator = denominator if denominator > 0 else 1.0
+    name = f"I{k}" if weights is None else f"S{k}"
+    return pd.Series(totals / denominator, index=nodes, name=name)
 
 
 # =============================================================================
@@ -553,13 +626,26 @@ def contract_exposure(
     k: int,
     spec: Spec = "conservative",
     include_cloud_deps: bool = True,
+    weights: np.ndarray | None = None,
 ) -> pd.Series:
     """
-    I_k(v) over the contract population, for every node at once.
+    Exposure over the contract population, for every node at once.
 
     A node's own contracts are excluded from the numerator: D_k(v) is the set of
     OTHER nodes reaching v, and including them turns the metric into a contract-volume
     ranking (plan section 3.2).
+
+    Args:
+        graph: entity graph implied by (view, spec) -- see `select_graph`.
+        nodes: node order shared by every matrix and series.
+        population: contract population from `build_contract_population`.
+        deps: per-contract dependencies from `build_contract_deps`.
+        k: tier depth.
+        spec: propagation spec, "conservative" or "permissive".
+        include_cloud_deps: False drops platform attachments, giving the normal view.
+        weights: per-contract weight aligned to `population` row order. None gives the
+            count readout I_k; `build_contract_weights(...)` gives exposed contract
+            value S_k, which counts the WHOLE award (see that function).
 
     Returns:
         Series indexed by node, values in [0, 1].
@@ -568,9 +654,15 @@ def contract_exposure(
         graph, nodes, population, deps, k, spec, include_cloud_deps
     )
     others = _binarise(exposed > identity)  # drop each node's own contracts
-    counts = np.asarray(others.sum(axis=0)).ravel()
-    denominator = max(len(population), 1)
-    return pd.Series(counts / denominator, index=nodes, name=f"I{k}")
+    if weights is None:
+        totals = np.asarray(others.sum(axis=0)).ravel()
+        denominator = max(len(population), 1)
+    else:
+        totals = others.T @ weights
+        denominator = weights.sum()
+    denominator = denominator if denominator > 0 else 1.0
+    name = f"I{k}" if weights is None else f"S{k}"
+    return pd.Series(totals / denominator, index=nodes, name=name)
 
 
 def contract_exposure_counts(

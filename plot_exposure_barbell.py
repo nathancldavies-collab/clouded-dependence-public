@@ -48,11 +48,24 @@ GRID = "#e6e5e0"
 SPINE = "#d8d7d1"
 
 FACET_TITLES = {
-    ("contract", "conservative"): "Contracts — conservative (primary)",
+    ("entity", "permissive"): "Entities — primary",
+    ("contract", "conservative"): "Contracts — conservative (supporting)",
     ("contract", "permissive"): "Contracts — permissive (upper bound)",
-    ("entity", "permissive"): "Entities — permissive",
 }
 FACET_UNITS = {"contract": "contracts", "entity": "entities"}
+
+READOUT_AXIS = {
+    "count": "Share of {unit} exposed (%)",
+    "value": r"Exposed contract value (% of \$237.4B total)",
+}
+READOUTS = ("count", "value")
+READOUT_NOTE = {
+    "count": "Bold labels are cloud platforms.",
+    "value": (
+        "Exposed contract value counts the WHOLE award, not the portion attributable"
+        " to the dependency. Bold labels are cloud platforms."
+    ),
+}
 
 # Contractor names arrive SHOUTING from USAspending. Title-casing them is right
 # for ordinary words but wrong for acronyms, so those are listed explicitly -- a
@@ -93,10 +106,11 @@ _BRAND_CASING = {
     "Salesforce.Com": "Salesforce.com",
     "Amazon.Com": "Amazon.com",
 }
+# Entity is primary (plan section 3.3), so it leads the figure.
 FACET_ORDER = [
+    ("entity", "permissive"),
     ("contract", "conservative"),
     ("contract", "permissive"),
-    ("entity", "permissive"),
 ]
 
 
@@ -123,21 +137,33 @@ def humanise(label: str, is_platform: bool) -> str:
     return " ".join(out)
 
 
-def load_barbell(path: Path, top: int | None = None) -> pd.DataFrame:
-    """Load the barbell data, optionally trimming each facet to `top` rows."""
+def load_barbell(
+    path: Path, readout: str = "count", top: int | None = None
+) -> pd.DataFrame:
+    """Load one readout from the barbell data, optionally trimming each facet."""
     if not path.exists():
         raise SystemExit(
             f"Missing {path}\nRun `just exposure` first to produce the data."
         )
     df = pd.read_csv(path)
+    if "readout" in df.columns:
+        available = sorted(df["readout"].unique())
+        df = df[df["readout"] == readout]
+        if df.empty:
+            raise SystemExit(
+                f"No rows with readout={readout!r} in {path}. Available: {available}"
+            )
+    elif readout != "count":
+        raise SystemExit(
+            f"{path} predates the value readout; re-run `just exposure` to regenerate."
+        )
     if top is not None:
         df = (
             df.sort_values("clouded", ascending=False)
             .groupby(["analysis", "spec"], sort=False)
             .head(top)
-            .reset_index(drop=True)
         )
-    return df
+    return df.reset_index(drop=True)
 
 
 def _facets(df: pd.DataFrame) -> list[tuple[str, str]]:
@@ -153,6 +179,7 @@ def _draw_facet(
     analysis: str,
     spec: str,
     show_series_labels: bool,
+    readout: str = "count",
 ) -> None:
     """Draw one facet: rows sorted by clouded exposure, highest at the top."""
     rows = facet.sort_values("clouded", ascending=True).reset_index(drop=True)
@@ -209,9 +236,19 @@ def _draw_facet(
     # Counts in the right margin: the contrast obligation is met with visible
     # numbers, and they carry the absolute scale the percentages hide.
     unit = FACET_UNITS.get(analysis, "nodes")
+
+    def _amount(value: float) -> str:
+        # Escape the dollar sign: matplotlib parses a $...$ pair as mathtext, which
+        # would swallow the signs and italicise the magnitude suffix.
+        if readout == "value":
+            if value >= 1e9:
+                return rf"\${value / 1e9:,.1f}B"
+            return rf"\${value / 1e6:,.0f}M"
+        return f"{value:,.0f}"
+
     for y, row in zip(positions, rows.itertuples()):
         ax.annotate(
-            f"{row.normal_count:,} → {row.clouded_count:,}",
+            f"{_amount(row.normal_count)} → {_amount(row.clouded_count)}",
             xy=(1.02, y),
             xycoords=("axes fraction", "data"),
             va="center",
@@ -219,8 +256,11 @@ def _draw_facet(
             fontsize=8,
             color=TEXT_MUTED,
         )
+    header = (
+        "value: normal → clouded" if readout == "value" else f"{unit}: normal → clouded"
+    )
     ax.annotate(
-        f"{unit}: normal → clouded",
+        header,
         xy=(1.02, 1.045),
         xycoords="axes fraction",
         va="bottom",
@@ -256,7 +296,10 @@ def _draw_facet(
         pad=10,
     )
     ax.set_xlabel(
-        f"Share of {unit} exposed (%)", fontsize=9, color=TEXT_SECONDARY, labelpad=6
+        READOUT_AXIS[readout].format(unit=unit),
+        fontsize=9,
+        color=TEXT_SECONDARY,
+        labelpad=6,
     )
 
     ax.set_facecolor(SURFACE)
@@ -268,7 +311,9 @@ def _draw_facet(
     ax.tick_params(colors=TEXT_SECONDARY, length=0, labelsize=9)
 
 
-def plot_barbell(df: pd.DataFrame, output_path: Path, k: int | None = None) -> Path:
+def plot_barbell(
+    df: pd.DataFrame, output_path: Path, k: int | None = None, readout: str = "count"
+) -> Path:
     """Render every facet as a stacked barbell chart and save it."""
     facets = _facets(df)
     counts = [len(df[(df["analysis"] == a) & (df["spec"] == s)]) for a, s in facets]
@@ -289,7 +334,9 @@ def plot_barbell(df: pd.DataFrame, output_path: Path, k: int | None = None) -> P
 
     for index, (ax, (analysis, spec)) in enumerate(zip(axes, facets)):
         facet = df[(df["analysis"] == analysis) & (df["spec"] == spec)]
-        _draw_facet(ax, facet, analysis, spec, show_series_labels=index == 0)
+        _draw_facet(
+            ax, facet, analysis, spec, show_series_labels=index == 0, readout=readout
+        )
 
     depth = f" (k = {k})" if k is not None else ""
     fig.subplots_adjust(
@@ -299,10 +346,11 @@ def plot_barbell(df: pd.DataFrame, output_path: Path, k: int | None = None) -> P
         bottom=legend_in / height,
     )
 
+    measure = "Exposed contract value" if readout == "value" else "Dependency exposure"
     fig.text(
         0.035,
         1 - 0.34 / height,
-        "Dependency exposure: what the contracting record shows"
+        f"{measure}: what the contracting record shows"
         " vs. what platform attribution reveals",
         ha="left",
         va="top",
@@ -313,9 +361,10 @@ def plot_barbell(df: pd.DataFrame, output_path: Path, k: int | None = None) -> P
     fig.text(
         0.035,
         1 - 0.62 / height,
-        "Union of the top-ranked nodes in either view. Bold labels are cloud platforms."
-        f" Exposure only{depth}: which nodes stand in a dependency relation,"
-        " not a prediction of failure.",
+        "Union of the top-ranked nodes in either view. "
+        + READOUT_NOTE[readout]
+        + f" Exposure only{depth}: which nodes stand in a dependency"
+        " relation, not a prediction of failure.",
         ha="left",
         va="top",
         fontsize=9,
@@ -369,8 +418,8 @@ def print_table(df: pd.DataFrame) -> None:
         for row in facet.itertuples():
             marker = "*" if row.is_platform else " "
             print(
-                f"    {marker}{row.label[:33]:<33s} {row.normal_count:>9,} "
-                f"{row.clouded_count:>9,} {row.normal * 100:>8.3f}% "
+                f"    {marker}{row.label[:33]:<33s} {row.normal_count:>12,.0f} "
+                f"{row.clouded_count:>12,.0f} {row.normal * 100:>8.3f}% "
                 f"{row.clouded * 100:>9.3f}%"
             )
 
@@ -386,10 +435,16 @@ def parse_args() -> argparse.Namespace:
         help="Barbell data CSV from run_exposure_analysis.py",
     )
     parser.add_argument(
-        "--out",
+        "--out-dir",
         type=Path,
-        default=OUTPUTS_DIR / "exposure" / "exposure_barbell.png",
-        help="Output PNG path",
+        default=OUTPUTS_DIR / "exposure",
+        help="Directory for the output PNGs",
+    )
+    parser.add_argument(
+        "--readout",
+        choices=["count", "value", "both"],
+        default="both",
+        help="Which readout to render (default: both, as separate figures)",
     )
     parser.add_argument(
         "--top", type=int, default=None, help="Trim each facet to this many rows"
@@ -405,8 +460,11 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    data = load_barbell(args.data, top=args.top)
-    if args.table:
-        print_table(data)
-    saved = plot_barbell(data, args.out, k=args.k)
-    print(f"\n  Saved barbell plot: {saved}")
+    readouts = READOUTS if args.readout == "both" else (args.readout,)
+    for readout in readouts:
+        data = load_barbell(args.data, readout=readout, top=args.top)
+        if args.table:
+            print_table(data)
+        out = args.out_dir / f"exposure_barbell_{readout}.png"
+        saved = plot_barbell(data, out, k=args.k, readout=readout)
+        print(f"  Saved {readout:5s} barbell: {saved}")
