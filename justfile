@@ -10,3 +10,6 @@ pipeline:
 
 generate-interrater:
     uv run validation/build_validation_sample.py --rater ND JR
+
+exposure *args:
+    uv run run_exposure_analysis.py {{args}}
