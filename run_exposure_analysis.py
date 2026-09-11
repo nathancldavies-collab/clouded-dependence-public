@@ -129,14 +129,19 @@ def _check_labels(board: pd.DataFrame) -> None:
         )
 
 
-def run_exposure_analysis(k: int = 2, top: int = 15, analysis: str = "both") -> None:
+def run_exposure_analysis(
+    ks: tuple[int, ...] = (1, 2, 3), top: int = 15, analysis: str = "both"
+) -> None:
     """Execute the exposure analysis and write outputs."""
     start = time.time()
 
     print("=" * 80)
     print("NTH-ORDER DEPENDENCY EXPOSURE: NORMAL vs CLOUDED VIEW")
     print("=" * 80)
-    print(f"\n  Tier depth k = {k}   (distance counted in dependency tiers, not edges)")
+    print(
+        f"\n  Tier depths k = {', '.join(str(k) for k in ks)}"
+        "   (distance counted in dependency tiers, not edges)"
+    )
     print("  Reporting exposure only - which contracts could be affected.")
     print("  No outage is posited and no failure is predicted.")
     print()
@@ -192,8 +197,11 @@ def run_exposure_analysis(k: int = 2, top: int = 15, analysis: str = "both") -> 
     written: list[str] = []
     summaries: list[dict] = []
     barbells: list[pd.DataFrame] = []
+    boards: dict[str, list[pd.DataFrame]] = {}
+    tables: dict[str, list[pd.DataFrame]] = {}
 
     def _emit(
+        k: int,
         analysis: str,
         spec: str,
         normal: pd.Series,
@@ -205,7 +213,7 @@ def run_exposure_analysis(k: int = 2, top: int = 15, analysis: str = "both") -> 
         unit: str,
         readout: str,
     ) -> None:
-        """Print and persist one (analysis, spec, readout) block."""
+        """Print and collect one (k, analysis, spec, readout) block."""
         denom = weights_total if readout == "value" else denom_count
         board = ex.leaderboard(normal, clouded, labels, top=top)
         _print_leaderboard(board, denom, unit, readout=readout)
@@ -223,6 +231,7 @@ def run_exposure_analysis(k: int = 2, top: int = 15, analysis: str = "both") -> 
             _print_summary(f"{view}", summary)
             summaries.append(
                 {
+                    "k": k,
                     "analysis": analysis,
                     "spec": spec,
                     "readout": readout,
@@ -232,17 +241,18 @@ def run_exposure_analysis(k: int = 2, top: int = 15, analysis: str = "both") -> 
             )
 
         barbell = ex.barbell_data(normal, clouded, labels, denom, top=top)
-        barbell.insert(0, "analysis", analysis)
-        barbell.insert(1, "spec", spec)
-        barbell.insert(2, "readout", readout)
+        barbell.insert(0, "k", k)
+        barbell.insert(1, "analysis", analysis)
+        barbell.insert(2, "spec", spec)
+        barbell.insert(3, "readout", readout)
         barbells.append(barbell)
 
+        # Accumulate per-stem across k, so the file count stays flat as k sweeps.
         stem = f"{analysis}_{spec}_{readout}"
-        board_path = out_dir / f"leaderboard_{stem}.csv"
-        table_path = out_dir / f"exposure_by_platform_{stem}.csv"
-        board.to_csv(board_path, index=False)
-        table.to_csv(table_path, index=False)
-        written.extend([board_path.name, table_path.name])
+        board.insert(0, "k", k)
+        table.insert(0, "k", k)
+        boards.setdefault(stem, []).append(board)
+        tables.setdefault(stem, []).append(table)
 
     # --- Analysis 1: entity exposure (PRIMARY) ------------------------------
     if analysis in ("entity", "both"):
@@ -254,26 +264,30 @@ def run_exposure_analysis(k: int = 2, top: int = 15, analysis: str = "both") -> 
         print("  contracts is the unit of analysis, not an assumption layered on it.")
         print(f"  Entity weights total ${entity_weights.sum() / 1e9:.2f}B.")
 
-        for readout in READOUTS:
-            w = entity_weights if readout == "value" else None
-            title = (
-                "EXPOSED CONTRACT VALUE (obligations held by exposed entities)"
-                if readout == "value"
-                else "COUNT (share of other entities)"
-            )
-            print(f"\n\n  {'=' * 74}\n  READOUT: {title}\n  {'=' * 74}")
-            _emit(
-                "entity",
-                "permissive",
-                ex.entity_exposure(g_normal, nodes, k, weights=w),
-                ex.entity_exposure(g_clouded, nodes, k, weights=w),
-                g_normal,
-                g_clouded,
-                len(nodes) - 1,
-                entity_weights.sum(),
-                "entities",
-                readout,
-            )
+        for k in ks:
+            for readout in READOUTS:
+                w = entity_weights if readout == "value" else None
+                title = (
+                    "EXPOSED CONTRACT VALUE (obligations held by exposed entities)"
+                    if readout == "value"
+                    else "COUNT (share of other entities)"
+                )
+                print(f"\n\n  {'=' * 74}")
+                print(f"  k = {k}   READOUT: {title}")
+                print(f"  {'=' * 74}")
+                _emit(
+                    k,
+                    "entity",
+                    "permissive",
+                    ex.entity_exposure(g_normal, nodes, k, weights=w),
+                    ex.entity_exposure(g_clouded, nodes, k, weights=w),
+                    g_normal,
+                    g_clouded,
+                    len(nodes) - 1,
+                    entity_weights.sum(),
+                    "entities",
+                    readout,
+                )
 
     # --- Analysis 2: contract exposure (SUPPORTING) -------------------------
     if analysis in ("contract", "both"):
@@ -288,13 +302,14 @@ def run_exposure_analysis(k: int = 2, top: int = 15, analysis: str = "both") -> 
             graph_n = ex.select_graph("normal", spec, g_normal, g_clouded)
             graph_c = ex.select_graph("clouded", spec, g_normal, g_clouded)
 
-            for readout in READOUTS:
+            for k, readout in [(k, r) for k in ks for r in READOUTS]:
                 w = contract_weights if readout == "value" else None
                 label_r = "EXPOSED CONTRACT VALUE" if readout == "value" else "COUNT"
                 print(f"\n\n  {'=' * 74}")
-                print(f"  SPEC: {spec.upper()}{primary}   READOUT: {label_r}")
+                print(f"  SPEC: {spec.upper()}{primary}   k = {k}   READOUT: {label_r}")
                 print(f"  {'=' * 74}")
                 _emit(
+                    k,
                     "contract",
                     spec,
                     ex.contract_exposure(
@@ -333,15 +348,24 @@ def run_exposure_analysis(k: int = 2, top: int = 15, analysis: str = "both") -> 
         print("\n\n" + "#" * 80)
         print("# BARBELL PLOT DATA")
         print("#" * 80)
-        n_facets = len(combined.groupby(["analysis", "spec", "readout"]))
+        n_facets = len(combined.groupby(["k", "analysis", "spec", "readout"]))
         print(
             f"\n  {len(combined):,} rows across {n_facets} facet(s): the union of each"
             f" view's top {top}, with both"
         )
         print("  endpoints on one row so nodes ranking highly in only one view keep")
-        print("  their counterpart value. Facet on [analysis, spec, readout]; plot")
+        print("  their counterpart value. Facet on [k, analysis, spec, readout]; plot")
         print("  normal -> clouded per label; `in_top_normal` / `in_top_clouded` mark")
         print("  which view put each node in scope.")
+
+    for stem, frames in boards.items():
+        path = out_dir / f"leaderboard_{stem}.csv"
+        pd.concat(frames, ignore_index=True).to_csv(path, index=False)
+        written.append(path.name)
+    for stem, frames in tables.items():
+        path = out_dir / f"exposure_by_platform_{stem}.csv"
+        pd.concat(frames, ignore_index=True).to_csv(path, index=False)
+        written.append(path.name)
 
     summary_path = out_dir / "exposure_summary.csv"
     pd.DataFrame(summaries).to_csv(summary_path, index=False)
@@ -378,8 +402,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--k",
         type=int,
-        default=2,
-        help="Tier depth for the headline metric (default: 2)",
+        nargs="+",
+        default=[1, 2, 3],
+        help="Tier depths to compute; every output is tagged with k (default: 1 2 3)",
     )
     parser.add_argument(
         "--top", type=int, default=15, help="Leaderboard length (default: 15)"
@@ -395,4 +420,4 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    run_exposure_analysis(k=args.k, top=args.top, analysis=args.analysis)
+    run_exposure_analysis(ks=tuple(args.k), top=args.top, analysis=args.analysis)

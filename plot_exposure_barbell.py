@@ -18,8 +18,10 @@ Design notes:
   - Facets carry independent x-scales: conservative exposure runs to ~0.5% of
     contracts while permissive runs to ~60%, so a shared scale would flatten the
     conservative facet to a single tick. Each facet is labelled accordingly.
-  - Where a node does not move, the markers overlap exactly; a surface-coloured
-    ring keeps both readable.
+  - The two endpoints share a marker size and are told apart by shape (circle for
+    the naive view, star for the unclouded one) as well as shade. Where a node
+    does not move, the markers overlap; a surface-coloured ring keeps both
+    readable.
   - Platform nodes are bold, so platform-vs-contractor identity never rests on
     colour alone.
 """
@@ -46,6 +48,16 @@ TEXT_MUTED = "#8a8880"
 SURFACE = "#fcfcfb"
 GRID = "#e6e5e0"
 SPINE = "#d8d7d1"
+
+# Shape carries the series distinction alongside shade, so the two endpoints stay
+# separable in greyscale and for readers who cannot tell the shades apart.
+NAIVE_MARKER = "o"
+UNCLOUDED_MARKER = "*"
+# A star's ink sits inside its bounding box, so matching `s` would leave it
+# reading as the smaller mark. These sizes are matched by eye, not by area.
+NAIVE_SIZE = 150
+UNCLOUDED_SIZE = 360
+LABEL_FONTSIZE = 10
 
 FACET_TITLES = {
     ("entity", "permissive"): "Entities — primary",
@@ -137,33 +149,52 @@ def humanise(label: str, is_platform: bool) -> str:
     return " ".join(out)
 
 
-def load_barbell(
-    path: Path, readout: str = "count", top: int | None = None
-) -> pd.DataFrame:
-    """Load one readout from the barbell data, optionally trimming each facet."""
+def read_barbell(path: Path) -> pd.DataFrame:
+    """Read the raw barbell data, failing loudly if it predates a needed column."""
     if not path.exists():
         raise SystemExit(
             f"Missing {path}\nRun `just exposure` first to produce the data."
         )
     df = pd.read_csv(path)
-    if "readout" in df.columns:
-        available = sorted(df["readout"].unique())
-        df = df[df["readout"] == readout]
-        if df.empty:
+    for column in ("readout", "k"):
+        if column not in df.columns:
             raise SystemExit(
-                f"No rows with readout={readout!r} in {path}. Available: {available}"
+                f"{path} has no {column!r} column; re-run `just exposure` to regenerate."
             )
-    elif readout != "count":
+    return df
+
+
+def load_barbell(
+    df: pd.DataFrame,
+    readout: str = "count",
+    k: int | None = None,
+    scope: str = "all",
+    top: int | None = None,
+) -> pd.DataFrame:
+    """
+    Select one (readout, k, scope) slice of the barbell data.
+
+    `scope` "entity" keeps only the entity analysis -- the primary unit -- which
+    gives a single-facet figure rather than the three-facet comparison.
+    """
+    out = df[df["readout"] == readout]
+    if k is not None:
+        out = out[out["k"] == k]
+    if scope != "all":
+        out = out[out["analysis"] == scope]
+    if out.empty:
         raise SystemExit(
-            f"{path} predates the value readout; re-run `just exposure` to regenerate."
+            f"No rows for readout={readout!r}, k={k}, scope={scope!r}. "
+            f"Available k: {sorted(df['k'].unique())}, "
+            f"analyses: {sorted(df['analysis'].unique())}"
         )
     if top is not None:
-        df = (
-            df.sort_values("clouded", ascending=False)
+        out = (
+            out.sort_values("clouded", ascending=False)
             .groupby(["analysis", "spec"], sort=False)
             .head(top)
         )
-    return df.reset_index(drop=True)
+    return out.reset_index(drop=True)
 
 
 def _facets(df: pd.DataFrame) -> list[tuple[str, str]]:
@@ -177,8 +208,6 @@ def _draw_facet(
     ax: plt.Axes,
     facet: pd.DataFrame,
     analysis: str,
-    spec: str,
-    show_series_labels: bool,
     readout: str = "count",
 ) -> None:
     """Draw one facet: rows sorted by clouded exposure, highest at the top."""
@@ -195,29 +224,31 @@ def _draw_facet(
             zorder=1,
         )
 
-    # Surface-coloured ring so coincident markers stay legible where delta is 0.
-    # The normal marker is drawn larger so that a node which does not move (its
-    # two endpoints coincide exactly, e.g. delta == 0) still reads as two marks:
-    # a dark core inside a light annulus. Both stay centred on their true value.
+    # The two endpoints read at the same visual weight: the series are told apart
+    # by shape (circle vs. star) and shade, not by size, so neither reads as the
+    # larger quantity. A surface-coloured ring keeps both legible where delta is 0 and
+    # the markers coincide exactly.
     ax.scatter(
         rows["normal"] * 100,
         positions,
-        s=105,
+        s=NAIVE_SIZE,
+        marker=NAIVE_MARKER,
         color=NORMAL_COLOR,
         edgecolors=SURFACE,
-        linewidths=1.5,
+        linewidths=1.2,
         zorder=3,
-        label="Normal view",
+        label="Naive view",
     )
     ax.scatter(
         rows["clouded"] * 100,
         positions,
-        s=45,
+        s=UNCLOUDED_SIZE,
+        marker=UNCLOUDED_MARKER,
         color=CLOUDED_COLOR,
         edgecolors=SURFACE,
-        linewidths=1.0,
+        linewidths=1.2,
         zorder=4,
-        label="Clouded view",
+        label="Unclouded view",
     )
 
     ax.set_yticks(list(positions))
@@ -230,11 +261,8 @@ def _draw_facet(
         tick.set_fontweight("bold" if is_platform else "normal")
 
     span = max(rows["clouded"].max() * 100, 1e-6)
-    ax.set_xlim(-span * 0.04, span * 1.08)
     ax.set_ylim(-0.7, len(rows) - 0.3)
 
-    # Counts in the right margin: the contrast obligation is met with visible
-    # numbers, and they carry the absolute scale the percentages hide.
     unit = FACET_UNITS.get(analysis, "nodes")
 
     def _amount(value: float) -> str:
@@ -246,58 +274,44 @@ def _draw_facet(
             return rf"\${value / 1e6:,.0f}M"
         return f"{value:,.0f}"
 
+    # Amounts sit on their own marker rather than in the right margin, so the
+    # absolute scale reads off the dot it belongs to. Each label goes on the
+    # outward side of its endpoint -- away from the connector -- so the pair never
+    # collides in the middle of the barbell.
+    pad = span * 0.035
     for y, row in zip(positions, rows.itertuples()):
-        ax.annotate(
-            f"{_amount(row.normal_count)} → {_amount(row.clouded_count)}",
-            xy=(1.02, y),
-            xycoords=("axes fraction", "data"),
-            va="center",
-            ha="left",
-            fontsize=8,
-            color=TEXT_MUTED,
-        )
-    header = (
-        "value: normal → clouded" if readout == "value" else f"{unit}: normal → clouded"
-    )
-    ax.annotate(
-        header,
-        xy=(1.02, 1.045),
-        xycoords="axes fraction",
-        va="bottom",
-        ha="left",
-        fontsize=8,
-        color=TEXT_MUTED,
-        style="italic",
-    )
-
-    if show_series_labels and len(rows) > 0:
-        top_row = rows.iloc[-1]
-        for value, color, text, align in [
-            (top_row["normal"], NORMAL_COLOR, "normal", "right"),
-            (top_row["clouded"], CLOUDED_COLOR, "clouded", "left"),
+        naive_x, unclouded_x = row.normal * 100, row.clouded * 100
+        naive_left = naive_x <= unclouded_x
+        for x, value, color, ha in [
+            (
+                naive_x,
+                row.normal_count,
+                NORMAL_COLOR,
+                "right" if naive_left else "left",
+            ),
+            (
+                unclouded_x,
+                row.clouded_count,
+                CLOUDED_COLOR,
+                "left" if naive_left else "right",
+            ),
         ]:
-            offset = -span * 0.015 if align == "right" else span * 0.015
             ax.annotate(
-                text,
-                xy=(value * 100 + offset, len(rows) - 1 + 0.42),
-                ha=align,
-                va="bottom",
-                fontsize=8,
+                _amount(value),
+                xy=(x + (-pad if ha == "right" else pad), y),
+                va="center",
+                ha=ha,
+                fontsize=LABEL_FONTSIZE,
                 color=color,
-                fontweight="bold",
+                zorder=5,
             )
 
-    ax.set_title(
-        FACET_TITLES.get((analysis, spec), f"{analysis} — {spec}"),
-        loc="left",
-        fontsize=10.5,
-        color=TEXT_PRIMARY,
-        fontweight="bold",
-        pad=10,
-    )
+    # Room for the outward-facing labels on both sides of the barbell.
+    ax.set_xlim(-span * 0.22, span * 1.26)
+
     ax.set_xlabel(
         READOUT_AXIS[readout].format(unit=unit),
-        fontsize=9,
+        fontsize=13,
         color=TEXT_SECONDARY,
         labelpad=6,
     )
@@ -332,69 +346,74 @@ def plot_barbell(
         axes = [axes]
     fig.patch.set_facecolor(SURFACE)
 
-    for index, (ax, (analysis, spec)) in enumerate(zip(axes, facets)):
+    for ax, (analysis, spec) in zip(axes, facets):
         facet = df[(df["analysis"] == analysis) & (df["spec"] == spec)]
-        _draw_facet(
-            ax, facet, analysis, spec, show_series_labels=index == 0, readout=readout
-        )
+        _draw_facet(ax, facet, analysis, readout=readout)
 
-    depth = f" (k = {k})" if k is not None else ""
+    depth = f" k = {k} dependency tier{'s' if (k or 0) != 1 else ''}." if k else ""
     fig.subplots_adjust(
         left=0.26,
-        right=0.82,
+        right=0.97,
         top=1 - header_in / height,
         bottom=legend_in / height,
     )
 
     measure = "Exposed contract value" if readout == "value" else "Dependency exposure"
-    fig.text(
-        0.035,
-        1 - 0.34 / height,
-        f"{measure}: what the contracting record shows"
-        " vs. what platform attribution reveals",
-        ha="left",
-        va="top",
-        fontsize=13.5,
-        color=TEXT_PRIMARY,
-        fontweight="bold",
-    )
-    fig.text(
-        0.035,
-        1 - 0.62 / height,
-        "Union of the top-ranked nodes in either view. "
-        + READOUT_NOTE[readout]
-        + f" Exposure only{depth}: which nodes stand in a dependency"
-        " relation, not a prediction of failure.",
-        ha="left",
-        va="top",
-        fontsize=9,
-        color=TEXT_SECONDARY,
-    )
+    # fig.text(
+    #     0.035,
+    #     1 - 0.34 / height,
+    #     f"{measure}: what the contracting record shows"
+    #     " vs. what platform attribution reveals",
+    #     ha="left",
+    #     va="top",
+    #     fontsize=13.5,
+    #     color=TEXT_PRIMARY,
+    #     fontweight="bold",
+    # )
+    # fig.text(
+    #     0.035,
+    #     1 - 0.62 / height,
+    #     "Union of the top-ranked nodes in either view."
+    #     + depth
+    #     + " "
+    #     + READOUT_NOTE[readout]
+    #     + " Exposure only: which nodes stand in a dependency relation,"
+    #     " not a prediction of failure.",
+    #     ha="left",
+    #     va="top",
+    #     fontsize=9,
+    #     color=TEXT_SECONDARY,
+    # )
 
     handles = [
         Line2D(
             [],
             [],
-            marker="o",
+            marker=marker,
             linestyle="none",
-            markersize=8,
+            markersize=size,
             markerfacecolor=color,
             markeredgecolor=SURFACE,
-            markeredgewidth=1.5,
+            markeredgewidth=1.2,
             label=label,
         )
-        for color, label in [
-            (NORMAL_COLOR, "Normal view (contracting record only)"),
-            (CLOUDED_COLOR, "Clouded view (with platform attribution)"),
+        for color, marker, size, label in [
+            (NORMAL_COLOR, NAIVE_MARKER, 9, "Naive view (contracting record only)"),
+            (
+                CLOUDED_COLOR,
+                UNCLOUDED_MARKER,
+                15,
+                "Unclouded view (with platform attribution)",
+            ),
         ]
     ]
     fig.legend(
         handles=handles,
         frameon=False,
-        loc="lower left",
-        bbox_to_anchor=(0.035, 0.18 / height),
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.18 / height),
         ncol=2,
-        fontsize=9,
+        fontsize=10,
         labelcolor=TEXT_SECONDARY,
     )
 
@@ -450,7 +469,20 @@ def parse_args() -> argparse.Namespace:
         "--top", type=int, default=None, help="Trim each facet to this many rows"
     )
     parser.add_argument(
-        "--k", type=int, default=None, help="Tier depth, for the subtitle only"
+        "--k",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Tier depths to render, one figure each (default: every k in the data)",
+    )
+    parser.add_argument(
+        "--scope",
+        choices=["all", "entity", "contract", "both"],
+        default="both",
+        help=(
+            "'entity' renders the primary unit alone; 'all' renders every facet; "
+            "'both' writes each (default)"
+        ),
     )
     parser.add_argument(
         "--table", action="store_true", help="Also print the numbers as a table"
@@ -460,11 +492,20 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
+    raw = read_barbell(args.data)
+
     readouts = READOUTS if args.readout == "both" else (args.readout,)
-    for readout in readouts:
-        data = load_barbell(args.data, readout=readout, top=args.top)
-        if args.table:
-            print_table(data)
-        out = args.out_dir / f"exposure_barbell_{readout}.png"
-        saved = plot_barbell(data, out, k=args.k, readout=readout)
-        print(f"  Saved {readout:5s} barbell: {saved}")
+    scopes = ("entity", "all") if args.scope == "both" else (args.scope,)
+    ks = args.k if args.k is not None else sorted(raw["k"].unique())
+
+    for scope in scopes:
+        for k in ks:
+            for readout in readouts:
+                data = load_barbell(
+                    raw, readout=readout, k=k, scope=scope, top=args.top
+                )
+                if args.table:
+                    print_table(data)
+                name = f"exposure_barbell_{scope}_{readout}_k{k}.png"
+                saved = plot_barbell(data, args.out_dir / name, k=k, readout=readout)
+                print(f"  {scope:7s} {readout:5s} k={k}: {saved.name}")
