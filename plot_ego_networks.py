@@ -102,32 +102,47 @@ def ego_members(
     return members, seen_normally
 
 
-def annulus_layout(members: dict[str, int]) -> tuple[dict, float]:
+def annulus_layout(
+    members: dict[str, int], inner_first: set[str] | None = None
+) -> tuple[dict, float]:
     """
-    Place each member in the annulus for its tier, packed at constant density.
+    Place each member in a band packed at constant density, visibility band first.
 
-    Each tier t gets the annulus between r[t-1] and r[t], with r chosen so the
-    annulus AREA is proportional to the number of nodes at that tier:
+    Bands are ordered by VISIBILITY first and tier second: every entity the
+    contracting record already reveals occupies the inner disc (ordered by tier
+    within it), and the clouded-only ones form the shell outside it. Each band b gets
+    the annulus between r[b-1] and r[b], with r chosen so the annulus AREA is
+    proportional to the number of nodes in it:
 
-        r[t] = sqrt(r[t-1]^2 + n[t] / (pi * NODE_DENSITY))
+        r[b] = sqrt(r[b-1]^2 + n[b] / (pi * NODE_DENSITY))
 
     Because the density constant is shared across panels, the radius a node set
     reaches encodes how many nodes it has -- a small neighbourhood draws a small
-    disc. Within an annulus, nodes are placed by phyllotaxis (golden angle, radius
-    by equal-area quantile), which fills it evenly without banding or the visible
-    seam a fixed angular step leaves.
+    disc, and the outer radius is unchanged by how the nodes are banded. Within an
+    annulus, nodes are placed by phyllotaxis (golden angle, radius by equal-area
+    quantile), which fills it evenly without banding or the visible seam a fixed
+    angular step leaves.
 
     Returns:
         (node -> (x, y), outer radius of the whole disc)
     """
     pos: dict[str, tuple[float, float]] = {}
+    priority = inner_first or set()
+    bands = [
+        sorted(
+            (n for n in members if (n in priority) == visible),
+            key=lambda n: (members[n], str(n)),
+        )
+        for visible in (True, False)
+    ]
     inner = CENTRE_HOLE
     index_offset = 0
-    for tier in sorted(set(members.values())):
-        ring = sorted((n for n, d in members.items() if d == tier), key=str)
-        count = len(ring)
+    for band in bands:
+        count = len(band)
+        if count == 0:
+            continue
         outer = np.sqrt(inner**2 + count / (np.pi * NODE_DENSITY))
-        for i, node in enumerate(ring):
+        for i, node in enumerate(band):
             # Equal-area radial quantile keeps density flat across the annulus.
             frac = (i + 0.5) / count
             radius = np.sqrt(inner**2 + frac * (outer**2 - inner**2))
@@ -152,11 +167,10 @@ def draw_ego(
     labels: dict[str, str],
     weights: dict[str, float],
     size_scale: float,
-    title: str,
     axis_limit: float,
 ) -> None:
     """Draw one ego network panel."""
-    pos, _ = annulus_layout(members)
+    pos, _ = annulus_layout(members, seen_normally)
     pos[target] = (0.0, 0.0)
 
     induced = graph.subgraph([target, *members]).copy()
@@ -188,30 +202,15 @@ def draw_ego(
     ax.annotate(
         humanise(raw, ex.is_platform_node(target)),
         xy=(0, 0),
-        xytext=(0, -22),
+        xytext=(0, -26),
         textcoords="offset points",
         ha="center",
         va="top",
-        fontsize=11.5,
+        fontsize=17,
         fontweight="bold",
         color=TEXT_PRIMARY,
         zorder=6,
         bbox={"boxstyle": "round,pad=0.34", "fc": SURFACE, "ec": "none", "alpha": 0.92},
-    )
-
-    hidden = len(members) - len(seen_normally)
-    ax.set_title(title, fontsize=12, fontweight="bold", color=TEXT_PRIMARY, pad=14)
-    ax.text(
-        0.5,
-        -0.02,
-        f"{len(members):,} entities   ·   "
-        f"{len(seen_normally):,} visible in the contracting record   ·   "
-        f"{hidden:,} revealed by attribution",
-        transform=ax.transAxes,
-        ha="center",
-        va="top",
-        fontsize=9,
-        color=TEXT_SECONDARY,
     )
 
     # Shared limits across panels, so the disc sizes are comparable by eye.
@@ -242,7 +241,7 @@ def plot_ego_networks(left: str, right: str, k: int, output_path: Path) -> Path:
     )
     size_scale = 300.0 / np.sqrt(peak) if peak > 0 else 1.0
 
-    radii = [annulus_layout(m)[1] for _, m, _ in panels]
+    radii = [annulus_layout(m, seen)[1] for _, m, seen in panels]
     axis_limit = max(radii) * 1.10
 
     fig, axes = plt.subplots(1, 2, figsize=(15, 8.2), dpi=200)
@@ -250,13 +249,7 @@ def plot_ego_networks(left: str, right: str, k: int, output_path: Path) -> Path:
     for ax in axes:
         ax.set_facecolor(SURFACE)
 
-    titles = [
-        "Normal view's most-exposed node\n"
-        + humanise(ex.display_label(panels[0][0], labels), False),
-        "Clouded view's most-exposed node\n"
-        + humanise(ex.display_label(panels[1][0], labels), True),
-    ]
-    for ax, (target, members, seen), title, radius in zip(axes, panels, titles, radii):
+    for ax, (target, members, seen), radius in zip(axes, panels, radii):
         draw_ego(
             ax,
             g_clouded,
@@ -266,7 +259,6 @@ def plot_ego_networks(left: str, right: str, k: int, output_path: Path) -> Path:
             labels,
             weights,
             size_scale,
-            title,
             axis_limit,
         )
         print(f"    disc radius {radius:.2f} for {len(members)} entities")
@@ -277,7 +269,7 @@ def plot_ego_networks(left: str, right: str, k: int, output_path: Path) -> Path:
             [],
             marker="o",
             linestyle="none",
-            markersize=9,
+            markersize=12,
             markerfacecolor=NORMAL_FILL,
             markeredgecolor=SURFACE,
             label=lbl,
@@ -289,7 +281,7 @@ def plot_ego_networks(left: str, right: str, k: int, output_path: Path) -> Path:
             [],
             marker="o",
             linestyle="none",
-            markersize=9,
+            markersize=12,
             markerfacecolor=CLOUDED_FILL,
             markeredgecolor=SURFACE,
             label="Revealed only by platform attribution",
@@ -299,7 +291,7 @@ def plot_ego_networks(left: str, right: str, k: int, output_path: Path) -> Path:
             [],
             marker="o",
             linestyle="none",
-            markersize=13,
+            markersize=17,
             markerfacecolor="none",
             markeredgecolor=TEXT_SECONDARY,
             label="Node area = dollars held by that entity",
@@ -310,18 +302,24 @@ def plot_ego_networks(left: str, right: str, k: int, output_path: Path) -> Path:
         frameon=False,
         loc="lower center",
         ncol=3,
-        fontsize=10,
+        fontsize=14,
         labelcolor=TEXT_SECONDARY,
         bbox_to_anchor=(0.5, 0.015),
     )
-    fig.suptitle(
-        "Who depends on whom: the contracting record vs. platform attribution",
-        fontsize=14.5,
-        fontweight="bold",
-        color=TEXT_PRIMARY,
-        y=0.975,
+    fig.subplots_adjust(top=0.97, bottom=0.1, left=0.02, right=0.98, wspace=0.05)
+
+    # Dashed rule separating the two views.
+    fig.add_artist(
+        Line2D(
+            [0.5, 0.5],
+            [0.09, 0.97],
+            transform=fig.transFigure,
+            color=TEXT_SECONDARY,
+            linestyle=(0, (6, 6)),
+            linewidth=1.1,
+            alpha=0.55,
+        )
     )
-    fig.subplots_adjust(top=0.86, bottom=0.11, left=0.02, right=0.98, wspace=0.05)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, facecolor=SURFACE, bbox_inches="tight")
