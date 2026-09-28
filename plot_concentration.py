@@ -39,16 +39,21 @@ References:
     Statistical Science 11, 189-228.
 
 Run from project root:
-    uv run plot_concentration.py [--file-type pdf] [--table] [--n-boot 2000]
+    uv run plot_concentration.py [--file-type pdf] [--table] [--n-boot 20000]
+                                 [--no-cache]
+
+By default the bootstrap results are cached in rolling_hhi.csv and reused on
+later runs, so restyling the figure does not re-run the bootstrap. The cache is
+ignored when --n-boot or --seed differ from the cached run, or when the dataset
+is newer than the cache; --no-cache forces a recompute.
 
 Design notes:
   - The naive view is grey because it is the baseline the reader already has;
     the unclouded view carries the finding and takes the repo's dark blue. The
     grey deliberately fails the chroma floor (it should read as grey); CVD
     separation from the blue and contrast against the surface both pass.
-  - Series are also told apart by line style (dashed vs. solid), marker shape
-    (circle vs. star) and direct end-of-line labels, so identity never rests on
-    colour alone.
+  - Series are also told apart by line style (dashed vs. solid) and marker
+    shape (circle vs. star), so identity never rests on colour alone.
   - The two series are nudged apart horizontally so their error bars do not
     overlap where the lines run close together.
   - The ratio is a derived quantity, not either view, so it is drawn in
@@ -88,8 +93,9 @@ RATIO_MARKER = "s"
 NAIVE_SIZE = 7
 UNCLOUDED_SIZE = 12
 RATIO_SIZE = 6
-# Vertical room one two-line end label needs, in points.
-LABEL_LINE_GAP_PT = 30
+LABEL_FONT_SIZE = 15
+TICK_FONT_SIZE = 12.5
+LEGEND_FONT_SIZE = 12
 
 NAIVE_LINESTYLE = (0, (5, 3))
 UNCLOUDED_LINESTYLE = "solid"
@@ -304,11 +310,11 @@ def rolling_hhi(df: pd.DataFrame, n_boot: int, seed: int) -> pd.DataFrame:
 
 def _style_axis(ax: plt.Axes, windows: list[str], title: str, ylabel: str) -> None:
     """Shared axis furniture: window ticks, zero-based y, recessive grid."""
-    ax.set_title(title, loc="left", fontsize=12, color=TEXT_PRIMARY, pad=10)
+    ax.set_title(title, loc="left", fontsize=16, color=TEXT_PRIMARY, pad=10)
     ax.set_xticks(range(len(windows)))
-    ax.set_xticklabels(windows, fontsize=9)
-    ax.set_xlim(-0.3, len(windows) - 1 + 1.3)
-    ax.set_ylabel(ylabel, fontsize=10, color=TEXT_SECONDARY)
+    ax.set_xticklabels(windows)
+    ax.set_xlim(-0.3, len(windows) - 1 + 0.3)
+    ax.set_ylabel(ylabel, fontsize=LABEL_FONT_SIZE, color=TEXT_SECONDARY)
     ax.yaxis.set_major_formatter(lambda value, _: f"{value:,.0f}")
 
     ax.set_facecolor(SURFACE)
@@ -317,7 +323,9 @@ def _style_axis(ax: plt.Axes, windows: list[str], title: str, ylabel: str) -> No
     for side in ("top", "right", "left"):
         ax.spines[side].set_visible(False)
     ax.spines["bottom"].set_color(SPINE)
-    ax.tick_params(colors=TEXT_SECONDARY, length=0, labelsize=9)
+    ax.tick_params(colors=TEXT_SECONDARY, length=0, labelsize=TICK_FONT_SIZE)
+    # Drop the window labels clear of the zero tick, which they meet at the corner.
+    ax.tick_params(axis="x", pad=9)
 
 
 def _draw_series(
@@ -367,7 +375,6 @@ def _draw_views(ax: plt.Axes, data: pd.DataFrame, windows: list[str]) -> None:
         ax, windows, "Concentration by view", "Herfindahl–Hirschman Index (HHI)"
     )
     ax.set_ylim(0, views["ci_high"].max() * 1.08)
-    _label_line_ends(ax, views, len(windows) - 1)
 
     handles = [
         Line2D(
@@ -403,7 +410,7 @@ def _draw_views(ax: plt.Axes, data: pd.DataFrame, windows: list[str]) -> None:
         handles=handles,
         frameon=False,
         loc="upper right",
-        fontsize=9.5,
+        fontsize=LEGEND_FONT_SIZE,
         labelcolor=TEXT_SECONDARY,
     )
 
@@ -417,76 +424,12 @@ def _draw_ratio(ax: plt.Axes, data: pd.DataFrame, windows: list[str]) -> None:
     ax.set_ylim(0, series["ci_high"].max() * 1.08)
     # 1x is "attribution reveals nothing": the reference the ratio is read against.
     ax.axhline(1, color=TEXT_SECONDARY, linewidth=1, linestyle=(0, (2, 2)), zorder=1)
-    ax.annotate(
-        "No hidden concentration",
-        xy=(len(windows) - 1 + 1.3, 1),
-        xytext=(0, 4),
-        textcoords="offset points",
-        ha="right",
-        va="bottom",
-        fontsize=8.5,
-        color=TEXT_SECONDARY,
-    )
-
-    last = series.iloc[-1]
-    ax.annotate(
-        f"{last['hhi']:.1f}×",
-        xy=(len(windows) - 1, last["hhi"]),
-        xytext=(12, 0),
-        textcoords="offset points",
-        va="center",
-        ha="left",
-        fontsize=9.5,
-        color=TEXT_PRIMARY,
-    )
-
-
-def _label_line_ends(ax: plt.Axes, data: pd.DataFrame, x: int) -> None:
-    """
-    Label each line's last point with its name and value.
-
-    Where the lines end close together, the labels are pushed apart vertically in
-    screen space, so they never overlap. Call after the axis limits are final.
-    """
-    ends = sorted(
-        (
-            (data[data["series"] == view].sort_values("start")["hhi"].iloc[-1], view)
-            for view in VIEWS
-        ),
-        reverse=True,
-    )
-    points_per_unit = (
-        ax.transData.transform((0, 1))[1] - ax.transData.transform((0, 0))[1]
-    ) * (72 / ax.figure.dpi)
-    min_gap = LABEL_LINE_GAP_PT
-    offsets = [0.0] * len(ends)
-    for i in range(1, len(ends)):
-        gap = (ends[i - 1][0] - ends[i][0]) * points_per_unit + offsets[i - 1]
-        if gap < min_gap:
-            offsets[i] = -(min_gap - gap)
-    # Centre the stack on the lines, so the top label moves up as the bottom moves down.
-    shift = -(offsets[0] + offsets[-1]) / 2
-    for (value, view), offset in zip(ends, offsets):
-        ax.annotate(
-            f"{VIEWS[view][0]}\n{value:,.0f}",
-            # Right of the rightmost (dodged) series, clear of the error bars.
-            xy=(x + DODGE, value),
-            xytext=(12, offset + shift),
-            textcoords="offset points",
-            va="center",
-            ha="left",
-            fontsize=9.5,
-            color=TEXT_PRIMARY,
-            linespacing=1.3,
-        )
 
 
 def plot_concentration(data: pd.DataFrame, output_path: Path) -> Path:
     """Render the views and their difference side by side and save the figure."""
-    fig, (left, right) = plt.subplots(ncols=2, figsize=(12, 4.6), dpi=200)
+    fig, (left, right) = plt.subplots(ncols=2, figsize=(14, 4.6), dpi=200)
     fig.patch.set_facecolor(SURFACE)
-    # Layout first: the end labels are placed in screen space, so the axes must
-    # already have their final size.
     fig.subplots_adjust(left=0.07, right=0.98, top=0.9, bottom=0.2, wspace=0.22)
 
     windows = data.drop_duplicates("start").sort_values("start")["window"].tolist()
@@ -495,8 +438,8 @@ def plot_concentration(data: pd.DataFrame, output_path: Path) -> Path:
 
     fig.supxlabel(
         "Three-year rolling window (fiscal years)",
-        y=0.08,
-        fontsize=10,
+        y=0.04,
+        fontsize=LABEL_FONT_SIZE,
         color=TEXT_SECONDARY,
     )
 
@@ -531,6 +474,25 @@ def print_table(data: pd.DataFrame) -> None:
             ]
         ]
         print(f"    {row[('window', '')]:<9s} " + " ".join(cells))
+
+
+def load_cache(
+    cache_path: Path, data_path: Path, n_boot: int, seed: int
+) -> pd.DataFrame | None:
+    """Cached results, or None if missing or computed with different inputs."""
+    if not cache_path.exists():
+        return None
+    if data_path.stat().st_mtime > cache_path.stat().st_mtime:
+        print(f"  cache: {data_path.name} is newer than the cache; recomputing")
+        return None
+    cached = pd.read_csv(cache_path)
+    if {"n_boot", "seed"} - set(cached.columns) or (
+        (cached["n_boot"] != n_boot).any() or (cached["seed"] != seed).any()
+    ):
+        print("  cache: computed with a different --n-boot or --seed; recomputing")
+        return None
+    print(f"  cache: using {cache_path}")
+    return cached
 
 
 def parse_args() -> argparse.Namespace:
@@ -571,15 +533,30 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--table", action="store_true", help="Also print the numbers as a table"
     )
+    parser.add_argument(
+        "--cache",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Reuse bootstrap results from rolling_hhi.csv when they match (default)",
+    )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    data = rolling_hhi(load_records(args.data), args.n_boot, args.seed)
+    cache_path = args.out_dir / "rolling_hhi.csv"
 
-    args.out_dir.mkdir(parents=True, exist_ok=True)
-    data.to_csv(args.out_dir / "rolling_hhi.csv", index=False)
+    data = (
+        load_cache(cache_path, args.data, args.n_boot, args.seed)
+        if args.cache
+        else None
+    )
+    if data is None:
+        data = rolling_hhi(load_records(args.data), args.n_boot, args.seed).assign(
+            n_boot=args.n_boot, seed=args.seed
+        )
+        args.out_dir.mkdir(parents=True, exist_ok=True)
+        data.to_csv(cache_path, index=False)
     if args.table:
         print_table(data)
     saved = plot_concentration(
