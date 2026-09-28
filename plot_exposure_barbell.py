@@ -457,7 +457,7 @@ def parse_args() -> argparse.Namespace:
         "--out-dir",
         type=Path,
         default=OUTPUTS_DIR / "exposure",
-        help="Directory for the output PNGs",
+        help="Directory for the output figures",
     )
     parser.add_argument(
         "--readout",
@@ -485,6 +485,12 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--file-type",
+        choices=["png", "pdf"],
+        default="png",
+        help="Output file format (default: png)",
+    )
+    parser.add_argument(
         "--table", action="store_true", help="Also print the numbers as a table"
     )
     return parser.parse_args()
@@ -506,6 +512,6 @@ if __name__ == "__main__":
                 )
                 if args.table:
                     print_table(data)
-                name = f"exposure_barbell_{scope}_{readout}_k{k}.png"
+                name = f"exposure_barbell_{scope}_{readout}_k{k}.{args.file_type}"
                 saved = plot_barbell(data, args.out_dir / name, k=k, readout=readout)
                 print(f"  {scope:7s} {readout:5s} k={k}: {saved.name}")

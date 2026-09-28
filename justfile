@@ -14,5 +14,6 @@ generate-interrater *args:
 exposure *args:
     uv run run_exposure_analysis.py {{args}}
 
-plot-exposure *args:
+plot-exposure *args="--file-type=pdf --scope=entity":
     uv run plot_exposure_barbell.py {{args}}
+    uv run plot_ego_networks.py {{args}}

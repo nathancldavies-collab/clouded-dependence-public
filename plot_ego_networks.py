@@ -345,10 +345,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out",
         type=Path,
-        default=OUTPUTS_DIR / "exposure" / "ego_networks.png",
-        help="Output PNG path",
+        default=None,
+        help="Output path (default: outputs/exposure/ego_networks.<file-type>)",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--file-type",
+        choices=["png", "pdf"],
+        default="png",
+        help="Output file format when --out is not given (default: png)",
+    )
+    # Ignore unknown flags so `just plot-exposure` can pass the barbell's args here too.
+    args, _ = parser.parse_known_args()
+    return args
 
 
 if __name__ == "__main__":
@@ -359,5 +367,6 @@ if __name__ == "__main__":
             OUTPUTS_DIR / "exposure" / "leaderboard_entity_permissive_count.csv"
         )
         left = board[board["view"] == "normal"].sort_values("rank").iloc[0]["node"]
-    saved = plot_ego_networks(left, args.right, args.k, args.out)
+    out = args.out or OUTPUTS_DIR / "exposure" / f"ego_networks.{args.file_type}"
+    saved = plot_ego_networks(left, args.right, args.k, out)
     print(f"\n  Saved ego networks: {saved}")
