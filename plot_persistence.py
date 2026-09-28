@@ -32,16 +32,14 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from clouded_deps.directories import OUTPUTS_DIR
-from plot_concentration import (
-    LABEL_FONT_SIZE,
+from clouded_deps.plot_style import (
     NAIVE_COLOR,
     SURFACE,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
-    TICK_FONT_SIZE,
     UNCLOUDED_COLOR,
-    _style_axis,
 )
+from plot_concentration import LABEL_FONT_SIZE, TICK_FONT_SIZE, _style_axis
 
 BAR_WIDTH = 0.5
 # (statistic in the summary, tick label, colour), left to right.

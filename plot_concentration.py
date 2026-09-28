@@ -73,20 +73,22 @@ from matplotlib.lines import Line2D
 from clouded_deps.directories import DATA_DIR, OUTPUTS_DIR
 from clouded_deps.pipeline.baseline_merged_hhi import calculate_hhi
 from clouded_deps.pipeline.views import FIRST_FY, LAST_FY, load_records
+from clouded_deps.plot_style import (
+    GRID,
+    NAIVE_COLOR,
+    NAIVE_MARKER,
+    SPINE,
+    SURFACE,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    UNCLOUDED_COLOR,
+    UNCLOUDED_MARKER,
+)
 from clouded_deps.stats import bca_interval
 
 # --- Palette -----------------------------------------------------------------
-NAIVE_COLOR = "#8a8880"
-UNCLOUDED_COLOR = "#17538f"
 RATIO_COLOR = "#3d3c38"
-TEXT_PRIMARY = "#0b0b0b"
-TEXT_SECONDARY = "#52514e"
-SURFACE = "#fcfcfb"
-GRID = "#e6e5e0"
-SPINE = "#d8d7d1"
 
-NAIVE_MARKER = "o"
-UNCLOUDED_MARKER = "*"
 RATIO_MARKER = "s"
 # A star's ink sits inside its bounding box, so it needs a larger size to read
 # at the same weight as the circle. Matched by eye, as in plot_exposure_barbell.

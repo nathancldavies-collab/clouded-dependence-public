@@ -12,9 +12,8 @@ Run from project root:
     uv run plot_exposure_barbell.py [--top 5] [--out path.png]
 
 Design notes:
-  - A dumbbell shows one measure in two states, so the two endpoints are two
-    SHADES OF ONE HUE, not two hues. The pair below is validated for colourblind
-    separation (dE 21.8 protan/deutan/tritan) and >= 3:1 contrast on the surface.
+  - The naive endpoint is the shared grey baseline and the unclouded endpoint
+    the shared dark blue (see clouded_deps.plot_style), matching the other plots.
   - Facets carry independent x-scales: conservative exposure runs to ~0.5% of
     contracts while permissive runs to ~60%, so a shared scale would flatten the
     conservative facet to a single tick. Each facet is labelled accordingly.
@@ -34,30 +33,35 @@ import pandas as pd
 from matplotlib.lines import Line2D
 
 from clouded_deps.directories import OUTPUTS_DIR
+from clouded_deps.plot_style import (
+    DEFAULT_K,
+    GRID,
+    NAIVE_COLOR,
+    NAIVE_MARKER,
+    SPINE,
+    SURFACE,
+    TEXT_PRIMARY,
+    TEXT_SECONDARY,
+    UNCLOUDED_COLOR,
+    UNCLOUDED_MARKER,
+)
 
 # --- Palette -----------------------------------------------------------------
-# Two shades of the repo's series blue. Validated light-mode, surface #fcfcfb:
-# lightness band PASS, chroma floor PASS, CVD separation PASS, normal-vision
-# PASS, contrast PASS.
-NORMAL_COLOR = "#4197dd"
-CLOUDED_COLOR = "#17538f"
-CONNECTOR = "#c2d6ea"
-TEXT_PRIMARY = "#0b0b0b"
-TEXT_SECONDARY = "#52514e"
-TEXT_MUTED = "#8a8880"
-SURFACE = "#fcfcfb"
-GRID = "#e6e5e0"
-SPINE = "#d8d7d1"
+# The naive view takes the shared grey baseline and the unclouded view the shared
+# dark blue, so this figure matches the concentration and persistence plots.
+NORMAL_COLOR = NAIVE_COLOR
+CLOUDED_COLOR = UNCLOUDED_COLOR
+# The connector is neutral: it joins the two views rather than belonging to one.
+CONNECTOR = "#d5d4cf"
 
-# Shape carries the series distinction alongside shade, so the two endpoints stay
-# separable in greyscale and for readers who cannot tell the shades apart.
-NAIVE_MARKER = "o"
-UNCLOUDED_MARKER = "*"
 # A star's ink sits inside its bounding box, so matching `s` would leave it
 # reading as the smaller mark. These sizes are matched by eye, not by area.
 NAIVE_SIZE = 150
 UNCLOUDED_SIZE = 360
-LABEL_FONTSIZE = 10
+LABEL_FONTSIZE = 13
+YTICK_FONTSIZE = 12
+XLABEL_FONTSIZE = 16
+LEGEND_FONTSIZE = 14
 
 FACET_TITLES = {
     ("entity", "permissive"): "Entities — primary",
@@ -254,7 +258,7 @@ def _draw_facet(
     ax.set_yticks(list(positions))
     ax.set_yticklabels(
         [humanise(row.label, row.is_platform) for row in rows.itertuples()],
-        fontsize=9,
+        fontsize=YTICK_FONTSIZE,
     )
     for tick, is_platform in zip(ax.get_yticklabels(), rows["is_platform"]):
         tick.set_color(TEXT_PRIMARY if is_platform else TEXT_SECONDARY)
@@ -311,9 +315,9 @@ def _draw_facet(
 
     ax.set_xlabel(
         READOUT_AXIS[readout].format(unit=unit),
-        fontsize=13,
+        fontsize=XLABEL_FONTSIZE,
         color=TEXT_SECONDARY,
-        labelpad=6,
+        labelpad=8,
     )
 
     ax.set_facecolor(SURFACE)
@@ -322,7 +326,8 @@ def _draw_facet(
     for side in ("top", "right", "left"):
         ax.spines[side].set_visible(False)
     ax.spines["bottom"].set_color(SPINE)
-    ax.tick_params(colors=TEXT_SECONDARY, length=0, labelsize=9)
+    ax.tick_params(colors=TEXT_SECONDARY, length=0)
+    ax.tick_params(axis="x", labelsize=12)
 
 
 def plot_barbell(
@@ -332,7 +337,7 @@ def plot_barbell(
     facets = _facets(df)
     counts = [len(df[(df["analysis"] == a) & (df["spec"] == s)]) for a, s in facets]
 
-    header_in, legend_in, row_in, facet_pad_in = 1.15, 1.05, 0.30, 0.92
+    header_in, legend_in, row_in, facet_pad_in = 1.15, 1.5, 0.34, 0.92
     body_in = sum(row_in * n + facet_pad_in for n in counts)
     height = header_in + legend_in + body_in
     hspace = facet_pad_in / (row_in * (sum(counts) / len(counts)))
@@ -398,11 +403,11 @@ def plot_barbell(
             label=label,
         )
         for color, marker, size, label in [
-            (NORMAL_COLOR, NAIVE_MARKER, 9, "Naive view (contracting record only)"),
+            (NORMAL_COLOR, NAIVE_MARKER, 12, "Naive view (contracting record only)"),
             (
                 CLOUDED_COLOR,
                 UNCLOUDED_MARKER,
-                15,
+                20,
                 "Unclouded view (with platform attribution)",
             ),
         ]
@@ -413,7 +418,7 @@ def plot_barbell(
         loc="lower center",
         bbox_to_anchor=(0.5, 0.18 / height),
         ncol=2,
-        fontsize=10,
+        fontsize=LEGEND_FONTSIZE,
         labelcolor=TEXT_SECONDARY,
     )
 
@@ -472,8 +477,8 @@ def parse_args() -> argparse.Namespace:
         "--k",
         type=int,
         nargs="+",
-        default=None,
-        help="Tier depths to render, one figure each (default: every k in the data)",
+        default=[DEFAULT_K],
+        help=f"Tier depths to render, one figure each (default: {DEFAULT_K})",
     )
     parser.add_argument(
         "--scope",
@@ -502,10 +507,9 @@ if __name__ == "__main__":
 
     readouts = READOUTS if args.readout == "both" else (args.readout,)
     scopes = ("entity", "all") if args.scope == "both" else (args.scope,)
-    ks = args.k if args.k is not None else sorted(raw["k"].unique())
 
     for scope in scopes:
-        for k in ks:
+        for k in args.k:
             for readout in readouts:
                 data = load_barbell(
                     raw, readout=readout, k=k, scope=scope, top=args.top
