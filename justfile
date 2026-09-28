@@ -17,3 +17,6 @@ exposure *args:
 plot-exposure *args="--file-type=pdf --scope=entity":
     uv run plot_exposure_barbell.py {{args}}
     uv run plot_ego_networks.py {{args}}
+
+plot-concentration *args="--file-type=pdf":
+    uv run plot_concentration.py {{args}}

@@ -1,0 +1,588 @@
+#!/usr/bin/env python3
+"""
+Line Plot: Naive vs Unclouded Cloud Concentration Over Time
+===========================================================
+Plots HHI of federal cloud spending over three-year rolling fiscal-year windows,
+in two views:
+
+  - Naive view: spending grouped by the contractor on the record (resolved UEI).
+  - Unclouded view: the same spending, with every platform-attributed record
+    reassigned from its contractor to its platform. Unattributed cloud records
+    keep their contractor.
+
+The two views therefore differ ONLY in attribution: same records, same dollars,
+same market. The left panel shows both views; the right panel shows their
+ratio (unclouded / naive), i.e. how many times more concentrated the market is
+than the contracting record suggests.
+
+Error bars are 95% BCa (bias-corrected and accelerated) intervals (Efron 1987;
+DiCiccio & Efron 1996) from a cluster bootstrap: within each window, prime
+awards are resampled with replacement, each carrying its subawards, since a
+prime and its subawards are not independent draws.
+
+  - Bias correction z0 comes from the share of bootstrap draws below the point
+    estimate. It matters here: the plug-in HHI is biased upward under
+    resampling (a large award drawn twice has its share squared), so plain
+    percentile intervals sit lopsidedly above the estimate.
+  - Acceleration a comes from the leave-one-prime-award-out jackknife, the same
+    unit the bootstrap resamples. The jackknife HHI is computed in closed form,
+    not by refitting once per award.
+
+Both views are computed on the same resamples and jackknife replicates, so the
+ratio has its own paired interval -- overlapping error bars in the left panel do
+NOT imply the ratio spans one. The intervals capture sampling variability in
+which awards were made, not classification or attribution error.
+
+References:
+  Efron, B. (1987). Better Bootstrap Confidence Intervals. JASA 82, 171-185.
+  DiCiccio, T. J. & Efron, B. (1996). Bootstrap Confidence Intervals.
+    Statistical Science 11, 189-228.
+
+Run from project root:
+    uv run plot_concentration.py [--file-type pdf] [--table] [--n-boot 2000]
+
+Design notes:
+  - The naive view is grey because it is the baseline the reader already has;
+    the unclouded view carries the finding and takes the repo's dark blue. The
+    grey deliberately fails the chroma floor (it should read as grey); CVD
+    separation from the blue and contrast against the surface both pass.
+  - Series are also told apart by line style (dashed vs. solid), marker shape
+    (circle vs. star) and direct end-of-line labels, so identity never rests on
+    colour alone.
+  - The two series are nudged apart horizontally so their error bars do not
+    overlap where the lines run close together.
+  - The ratio is a derived quantity, not either view, so it is drawn in
+    neutral ink with square markers rather than borrowing a view's identity.
+  - Both panels start at zero, so heights compare honestly; the ratio panel
+    marks 1x, where attribution would reveal nothing hidden.
+"""
+
+import argparse
+import warnings
+from pathlib import Path
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from matplotlib.lines import Line2D
+from scipy.stats import norm
+
+from clouded_deps.directories import DATA_DIR, OUTPUTS_DIR
+from clouded_deps.pipeline.baseline_merged_hhi import calculate_hhi
+
+# --- Palette -----------------------------------------------------------------
+NAIVE_COLOR = "#8a8880"
+UNCLOUDED_COLOR = "#17538f"
+RATIO_COLOR = "#3d3c38"
+TEXT_PRIMARY = "#0b0b0b"
+TEXT_SECONDARY = "#52514e"
+SURFACE = "#fcfcfb"
+GRID = "#e6e5e0"
+SPINE = "#d8d7d1"
+
+NAIVE_MARKER = "o"
+UNCLOUDED_MARKER = "*"
+RATIO_MARKER = "s"
+# A star's ink sits inside its bounding box, so it needs a larger size to read
+# at the same weight as the circle. Matched by eye, as in plot_exposure_barbell.
+NAIVE_SIZE = 7
+UNCLOUDED_SIZE = 12
+RATIO_SIZE = 6
+# Vertical room one two-line end label needs, in points.
+LABEL_LINE_GAP_PT = 30
+
+NAIVE_LINESTYLE = (0, (5, 3))
+UNCLOUDED_LINESTYLE = "solid"
+# Horizontal nudge, in window units, so the two views' error bars sit side by side.
+DODGE = 0.07
+
+VIEWS = {
+    "naive": (
+        "Naive view",
+        NAIVE_COLOR,
+        NAIVE_MARKER,
+        NAIVE_SIZE,
+        NAIVE_LINESTYLE,
+        -DODGE,
+    ),
+    "unclouded": (
+        "Unclouded view",
+        UNCLOUDED_COLOR,
+        UNCLOUDED_MARKER,
+        UNCLOUDED_SIZE,
+        UNCLOUDED_LINESTYLE,
+        DODGE,
+    ),
+}
+
+# FY2025 is a partial year in the data; the paper's range is FY2017-2024.
+FIRST_FY, LAST_FY = 2017, 2024
+WINDOW = 3
+CI_LEVEL = 0.95
+# Fewest bootstrap draws beyond a BCa endpoint before it is flagged as unstable.
+MIN_TAIL_DRAWS = 10
+
+ATTRIBUTED_METHODS = {"phase1_direct", "phase2_description", "phase3_pattern"}
+
+
+def load_records(path: Path) -> pd.DataFrame:
+    """Load the cloud records of the attributed dataset with a key for each view."""
+    if not path.exists():
+        raise SystemExit(f"Missing {path}\nRun `just pipeline` first.")
+    df = pd.read_csv(
+        path,
+        usecols=[
+            "contractor",
+            "original_prime_id",
+            "dollars",
+            "fiscal_year",
+            "is_cloud",
+            "final_platform",
+            "attribution_method",
+        ],
+    )
+    # Non-positive dollars are de-obligations; the baseline and platform HHI
+    # both drop them, so this does too.
+    df = df[
+        df["is_cloud"]
+        & (df["dollars"] > 0)
+        & df["fiscal_year"].between(FIRST_FY, LAST_FY)
+    ]
+    df = df.assign(fiscal_year=df["fiscal_year"].astype(int))
+
+    # Keying the unattributed rows by contractor UEI (not `final_platform`, which
+    # falls back to contractor NAME) keeps them identical across the two views.
+    attributed = df["attribution_method"].isin(ATTRIBUTED_METHODS)
+    return df.assign(
+        naive=df["contractor"],
+        unclouded=df["final_platform"].where(attributed, df["contractor"]),
+    )
+
+
+def hhi(df: pd.DataFrame, key: str) -> float:
+    """HHI (0-10,000) of dollars grouped by `key`."""
+    spending = df.groupby(key)["dollars"].sum()
+    return float(calculate_hhi(spending / spending.sum() * 100))
+
+
+def bootstrap_hhi(
+    df: pd.DataFrame, n_boot: int, rng: np.random.Generator
+) -> dict[str, np.ndarray]:
+    """
+    Bootstrap HHI for each view by resampling prime awards with replacement.
+
+    Every view is computed on the same resampled awards, so the draws are paired
+    across views and their ratio has a valid bootstrap distribution too.
+    """
+    prime_codes, primes = pd.factorize(df["original_prime_id"])
+    key_codes = {view: pd.factorize(df[view])[0] for view in VIEWS}
+    dollars = df["dollars"].to_numpy()
+    n_primes = len(primes)
+
+    draws = {view: np.empty(n_boot) for view in VIEWS}
+    for b in range(n_boot):
+        # How many times each prime award was drawn, applied to all its rows.
+        counts = np.bincount(rng.integers(0, n_primes, n_primes), minlength=n_primes)
+        weights = counts[prime_codes] * dollars
+        for view, codes in key_codes.items():
+            spending = np.bincount(codes, weights=weights)
+            draws[view][b] = calculate_hhi(spending / spending.sum() * 100)
+    return draws
+
+
+def jackknife_hhi(df: pd.DataFrame) -> dict[str, np.ndarray]:
+    """
+    Leave-one-prime-award-out HHI for each view, in closed form.
+
+    Dropping award p removes its dollars d_pk from each key k. With shares taken
+    over the full window (T_k key totals, S their sum, D_p award p's total):
+
+        HHI_(-p) = sum_k (T_k - d_pk)^2 / (S - D_p)^2
+                 = (sum_k T_k^2 - 2 sum_k T_k d_pk + sum_k d_pk^2) / (S - D_p)^2
+
+    so every replicate costs one pass over the award-key totals rather than a
+    refit per award. Everything is scaled by S first to keep the terms near 1.
+    """
+    prime_codes, primes = pd.factorize(df["original_prime_id"])
+    n_primes = len(primes)
+    share = df["dollars"].to_numpy() / df["dollars"].sum()
+    award_total = np.bincount(prime_codes, weights=share, minlength=n_primes)
+
+    replicates = {}
+    for view in VIEWS:
+        key_codes = pd.factorize(df[view])[0]
+        # Collapse to one row per (award, key) so d_pk is a single number.
+        cells = (
+            pd.DataFrame({"prime": prime_codes, "key": key_codes, "share": share})
+            .groupby(["prime", "key"], sort=False)["share"]
+            .sum()
+            .reset_index()
+        )
+        key_total = np.bincount(cells["key"], weights=cells["share"])
+        d = cells["share"].to_numpy()
+        cross = np.bincount(
+            cells["prime"], weights=key_total[cells["key"]] * d, minlength=n_primes
+        )
+        own = np.bincount(cells["prime"], weights=d**2, minlength=n_primes)
+        numerator = (key_total**2).sum() - 2 * cross + own
+        replicates[view] = numerator / (1 - award_total) ** 2 * 10_000
+    return replicates
+
+
+def bca_interval(
+    estimate: float, draws: np.ndarray, jackknife: np.ndarray, level: float
+) -> tuple[float, float]:
+    """
+    BCa interval (Efron 1987; DiCiccio & Efron 1996, eqs. 2.3-2.8).
+
+    z0 corrects median bias: the share of draws below the estimate, on the
+    normal scale (ties count half). a corrects for the standard error changing
+    with the parameter, estimated from the jackknife's skewness. The interval is
+    then read off the bootstrap draws at the adjusted percentiles.
+    """
+    below = np.mean(draws < estimate) + 0.5 * np.mean(draws == estimate)
+    # A share of exactly 0 or 1 would make z0 infinite; clip to one draw's worth.
+    below = np.clip(below, 1 / len(draws), 1 - 1 / len(draws))
+    z0 = norm.ppf(below)
+
+    deviations = jackknife.mean() - jackknife
+    spread = (deviations**2).sum()
+    a = (deviations**3).sum() / (6 * spread**1.5) if spread > 0 else 0.0
+
+    tail = (1 - level) / 2
+    percentiles = []
+    for z_alpha in norm.ppf([tail, 1 - tail]):
+        shifted = z0 + z_alpha
+        percentiles.append(norm.cdf(z0 + shifted / (1 - a * shifted)) * 100)
+    # With a large z0 the adjusted percentiles run far into the tails, where an
+    # endpoint rests on a handful of draws (DiCiccio & Efron 1996, sec. 7).
+    tail_draws = min(percentiles[0], 100 - percentiles[1]) / 100 * len(draws)
+    if tail_draws < MIN_TAIL_DRAWS:
+        warnings.warn(
+            f"BCa endpoint rests on {tail_draws:.1f} draws (z0={z0:+.2f}, a={a:+.3f});"
+            " raise --n-boot for a stable interval.",
+            stacklevel=2,
+        )
+    low, high = np.percentile(draws, percentiles)
+    return float(low), float(high)
+
+
+def rolling_hhi(df: pd.DataFrame, n_boot: int, seed: int) -> pd.DataFrame:
+    """
+    HHI per view, and their ratio, for every three-year fiscal-year window,
+    each with a BCa bootstrap interval.
+    """
+    rng = np.random.default_rng(seed)
+    rows = []
+    for start in range(FIRST_FY, LAST_FY - WINDOW + 2):
+        end = start + WINDOW - 1
+        records = df[df["fiscal_year"].between(start, end)]
+        estimates = {view: hhi(records, view) for view in VIEWS}
+        draws = bootstrap_hhi(records, n_boot, rng)
+        jackknife = jackknife_hhi(records)
+        # The ratio is resampled and jackknifed on the same paired replicates.
+        estimates["ratio"] = estimates["unclouded"] / estimates["naive"]
+        draws["ratio"] = draws["unclouded"] / draws["naive"]
+        jackknife["ratio"] = jackknife["unclouded"] / jackknife["naive"]
+        for series, estimate in estimates.items():
+            low, high = bca_interval(
+                estimate, draws[series], jackknife[series], CI_LEVEL
+            )
+            rows.append(
+                {
+                    "window": f"{start}–{str(end)[-2:]}",
+                    "start": start,
+                    "series": series,
+                    "hhi": estimate,
+                    "ci_low": low,
+                    "ci_high": high,
+                    "dollars": records["dollars"].sum(),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _style_axis(ax: plt.Axes, windows: list[str], title: str, ylabel: str) -> None:
+    """Shared axis furniture: window ticks, zero-based y, recessive grid."""
+    ax.set_title(title, loc="left", fontsize=12, color=TEXT_PRIMARY, pad=10)
+    ax.set_xticks(range(len(windows)))
+    ax.set_xticklabels(windows, fontsize=9)
+    ax.set_xlim(-0.3, len(windows) - 1 + 1.3)
+    ax.set_ylabel(ylabel, fontsize=10, color=TEXT_SECONDARY)
+    ax.yaxis.set_major_formatter(lambda value, _: f"{value:,.0f}")
+
+    ax.set_facecolor(SURFACE)
+    ax.grid(axis="y", color=GRID, linewidth=0.8, zorder=0)
+    ax.set_axisbelow(True)
+    for side in ("top", "right", "left"):
+        ax.spines[side].set_visible(False)
+    ax.spines["bottom"].set_color(SPINE)
+    ax.tick_params(colors=TEXT_SECONDARY, length=0, labelsize=9)
+
+
+def _draw_series(
+    ax: plt.Axes,
+    series: pd.DataFrame,
+    color: str,
+    marker: str,
+    size: float,
+    linestyle: str | tuple,
+    dodge: float = 0.0,
+) -> None:
+    """One line with its bootstrap error bars."""
+    x = [position + dodge for position in range(len(series))]
+    ax.errorbar(
+        x,
+        series["hhi"],
+        yerr=[series["hhi"] - series["ci_low"], series["ci_high"] - series["hhi"]],
+        fmt="none",
+        ecolor=color,
+        elinewidth=1.2,
+        capsize=3,
+        capthick=1.2,
+        zorder=2,
+    )
+    ax.plot(
+        x,
+        series["hhi"],
+        color=color,
+        linewidth=2,
+        linestyle=linestyle,
+        marker=marker,
+        markersize=size,
+        markeredgecolor=SURFACE,
+        markeredgewidth=1.2,
+        zorder=3,
+    )
+
+
+def _draw_views(ax: plt.Axes, data: pd.DataFrame, windows: list[str]) -> None:
+    """Left panel: both views, with a legend."""
+    views = data[data["series"].isin(VIEWS)]
+    for view, (_, color, marker, size, linestyle, dodge) in VIEWS.items():
+        series = views[views["series"] == view].sort_values("start")
+        _draw_series(ax, series, color, marker, size, linestyle, dodge)
+
+    _style_axis(
+        ax, windows, "Concentration by view", "Herfindahl–Hirschman Index (HHI)"
+    )
+    ax.set_ylim(0, views["ci_high"].max() * 1.08)
+    _label_line_ends(ax, views, len(windows) - 1)
+
+    handles = [
+        Line2D(
+            [],
+            [],
+            color=color,
+            linewidth=2,
+            linestyle=linestyle,
+            marker=marker,
+            markersize=size,
+            markeredgecolor=SURFACE,
+            markeredgewidth=1.2,
+            label=label,
+        )
+        for label, color, marker, size, linestyle in [
+            (
+                "Naive view (contracting record only)",
+                NAIVE_COLOR,
+                NAIVE_MARKER,
+                NAIVE_SIZE,
+                NAIVE_LINESTYLE,
+            ),
+            (
+                "Unclouded view (with platform attribution)",
+                UNCLOUDED_COLOR,
+                UNCLOUDED_MARKER,
+                UNCLOUDED_SIZE,
+                UNCLOUDED_LINESTYLE,
+            ),
+        ]
+    ]
+    ax.legend(
+        handles=handles,
+        frameon=False,
+        loc="upper right",
+        fontsize=9.5,
+        labelcolor=TEXT_SECONDARY,
+    )
+
+
+def _draw_ratio(ax: plt.Axes, data: pd.DataFrame, windows: list[str]) -> None:
+    """Right panel: unclouded over naive HHI, with its paired interval."""
+    series = data[data["series"] == "ratio"].sort_values("start")
+    _draw_series(ax, series, RATIO_COLOR, RATIO_MARKER, RATIO_SIZE, "solid")
+    _style_axis(ax, windows, "Hidden concentration", "Ratio of HHI (unclouded ÷ naive)")
+    ax.yaxis.set_major_formatter(lambda value, _: f"{value:g}×")
+    ax.set_ylim(0, series["ci_high"].max() * 1.08)
+    # 1x is "attribution reveals nothing": the reference the ratio is read against.
+    ax.axhline(1, color=TEXT_SECONDARY, linewidth=1, linestyle=(0, (2, 2)), zorder=1)
+    ax.annotate(
+        "No hidden concentration",
+        xy=(len(windows) - 1 + 1.3, 1),
+        xytext=(0, 4),
+        textcoords="offset points",
+        ha="right",
+        va="bottom",
+        fontsize=8.5,
+        color=TEXT_SECONDARY,
+    )
+
+    last = series.iloc[-1]
+    ax.annotate(
+        f"{last['hhi']:.1f}×",
+        xy=(len(windows) - 1, last["hhi"]),
+        xytext=(12, 0),
+        textcoords="offset points",
+        va="center",
+        ha="left",
+        fontsize=9.5,
+        color=TEXT_PRIMARY,
+    )
+
+
+def _label_line_ends(ax: plt.Axes, data: pd.DataFrame, x: int) -> None:
+    """
+    Label each line's last point with its name and value.
+
+    Where the lines end close together, the labels are pushed apart vertically in
+    screen space, so they never overlap. Call after the axis limits are final.
+    """
+    ends = sorted(
+        (
+            (data[data["series"] == view].sort_values("start")["hhi"].iloc[-1], view)
+            for view in VIEWS
+        ),
+        reverse=True,
+    )
+    points_per_unit = (
+        ax.transData.transform((0, 1))[1] - ax.transData.transform((0, 0))[1]
+    ) * (72 / ax.figure.dpi)
+    min_gap = LABEL_LINE_GAP_PT
+    offsets = [0.0] * len(ends)
+    for i in range(1, len(ends)):
+        gap = (ends[i - 1][0] - ends[i][0]) * points_per_unit + offsets[i - 1]
+        if gap < min_gap:
+            offsets[i] = -(min_gap - gap)
+    # Centre the stack on the lines, so the top label moves up as the bottom moves down.
+    shift = -(offsets[0] + offsets[-1]) / 2
+    for (value, view), offset in zip(ends, offsets):
+        ax.annotate(
+            f"{VIEWS[view][0]}\n{value:,.0f}",
+            # Right of the rightmost (dodged) series, clear of the error bars.
+            xy=(x + DODGE, value),
+            xytext=(12, offset + shift),
+            textcoords="offset points",
+            va="center",
+            ha="left",
+            fontsize=9.5,
+            color=TEXT_PRIMARY,
+            linespacing=1.3,
+        )
+
+
+def plot_concentration(data: pd.DataFrame, output_path: Path) -> Path:
+    """Render the views and their difference side by side and save the figure."""
+    fig, (left, right) = plt.subplots(ncols=2, figsize=(12, 4.6), dpi=200)
+    fig.patch.set_facecolor(SURFACE)
+    # Layout first: the end labels are placed in screen space, so the axes must
+    # already have their final size.
+    fig.subplots_adjust(left=0.07, right=0.98, top=0.9, bottom=0.2, wspace=0.22)
+
+    windows = data.drop_duplicates("start").sort_values("start")["window"].tolist()
+    _draw_views(left, data, windows)
+    _draw_ratio(right, data, windows)
+
+    fig.supxlabel(
+        "Three-year rolling window (fiscal years)",
+        y=0.08,
+        fontsize=10,
+        color=TEXT_SECONDARY,
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, facecolor=SURFACE, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
+def print_table(data: pd.DataFrame) -> None:
+    """Print the underlying numbers, so the chart is never the only view."""
+    wide = data.pivot_table(
+        index=["start", "window"], columns="series", values=["hhi", "ci_low", "ci_high"]
+    ).reset_index()
+
+    print(f"\n  Cloud spending HHI  ({CI_LEVEL:.0%} BCa bootstrap intervals)")
+    print(
+        f"    {'window':<9s} {'naive':>6s} {'':<13s}"
+        f" {'unclouded':>9s} {'':<13s} {'ratio':>6s}"
+    )
+    print(f"    {'-' * 76}")
+    for _, row in wide.sort_values("start").iterrows():
+        cells = [
+            f"{row[('hhi', series)]:>{width}{fmt}}"
+            f" [{row[('ci_low', series)]:{fmt}}–{row[('ci_high', series)]:{fmt}}]".ljust(
+                width + 14
+            )
+            for series, width, fmt in [
+                ("naive", 6, ",.0f"),
+                ("unclouded", 9, ",.0f"),
+                ("ratio", 6, ".2f"),
+            ]
+        ]
+        print(f"    {row[('window', '')]:<9s} " + " ".join(cells))
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--data",
+        type=Path,
+        default=DATA_DIR / "02_processed" / "03_classified" / "attributed_dataset.csv",
+        help="Attributed dataset from the pipeline",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=OUTPUTS_DIR / "concentration",
+        help="Directory for the output figure and data",
+    )
+    parser.add_argument(
+        "--file-type",
+        choices=["png", "pdf"],
+        default="png",
+        help="Output file format (default: png)",
+    )
+    parser.add_argument(
+        "--n-boot",
+        type=int,
+        default=20_000,
+        # BCa reads the draws at adjusted percentiles. DiCiccio & Efron suggest
+        # ~2000 as a floor, but the HHI's bias correction here is large (|z0| up
+        # to ~1), pushing endpoints past the 0.1st/99.9th percentile, so more
+        # draws are needed for them to rest on more than a few resamples.
+        help="Bootstrap resamples per window (default: 20000)",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=20260928, help="Bootstrap random seed"
+    )
+    parser.add_argument(
+        "--table", action="store_true", help="Also print the numbers as a table"
+    )
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    data = rolling_hhi(load_records(args.data), args.n_boot, args.seed)
+
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    data.to_csv(args.out_dir / "rolling_hhi.csv", index=False)
+    if args.table:
+        print_table(data)
+    saved = plot_concentration(
+        data, args.out_dir / f"concentration_rolling_hhi.{args.file_type}"
+    )
+    print(f"  saved: {saved}")

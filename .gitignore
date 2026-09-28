@@ -7,6 +7,9 @@
 data/**
 outputs*/
 
+# Implementation plans
+implementation_plans/
+
 # LLM cache and batch results
 *cache*/
 *llm_results*
