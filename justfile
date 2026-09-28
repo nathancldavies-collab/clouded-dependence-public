@@ -20,3 +20,6 @@ plot-exposure *args="--file-type=pdf --scope=entity":
 
 plot-concentration *args="--file-type=pdf":
     uv run plot_concentration.py {{args}}
+
+persistence *args="--table":
+    uv run run_persistence_analysis.py {{args}}
