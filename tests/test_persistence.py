@@ -17,7 +17,7 @@ from clouded_deps.pipeline import persistence as ps
 # At-risk pairs (supplier at t, office active at t+1):
 #   naive      O1: (X,17) lost, (Y,18) kept   O2: (Z,17) kept, (Z,18) kept
 #   unclouded  O1: (Azure,17), (Azure,18) kept  O2: (AWS,17), (AWS,18) kept
-# So cA = 3/4, cB = 4/4, kappa = 4/3.
+# So cA = 3/4, cB = 4/4, PR = 4/3.
 # ---------------------------------------------------------------------------
 
 ROWS = [
@@ -55,11 +55,11 @@ def test_retention_counts_per_buyer(records: pd.DataFrame) -> None:
     assert _counts(records, "unclouded") == {"O1": (2, 2), "O2": (2, 2), "O3": (0, 0)}
 
 
-def test_kappa(records: pd.DataFrame) -> None:
+def test_persistence_ratio(records: pd.DataFrame) -> None:
     result = ps.persistence(records, n_boot=50, n_perm=20, seed=0)
     assert result["cA"] == pytest.approx(3 / 4)
     assert result["cB"] == pytest.approx(1.0)
-    assert result["kappa"] == pytest.approx(4 / 3)
+    assert result["pr"] == pytest.approx(4 / 3)
     # O3 has no at-risk pairs, so it is not a bootstrap cluster.
     assert result["n_buyers"] == 2
     assert result["n_pairs_cA"] == result["n_pairs_cB"] == 4

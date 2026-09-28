@@ -8,18 +8,18 @@ used again next year? It is computed twice:
 
   - cA: suppliers keyed by contractor (naive view)
   - cB: suppliers keyed by platform   (unclouded view)
-  - kappa = cB / cA
+  - PR = cB / cA, the persistence ratio
 
 The scope is platform-attributed cloud records only: unattributed records have
-the same key in both views and would only pull kappa toward 1.
+the same key in both views and would only pull PR toward 1.
 
-Since platforms are fewer than contractors, kappa > 1 almost by construction.
+Since platforms are fewer than contractors, PR > 1 almost by construction.
 The test is therefore against a label-shuffle null (platforms permuted across
-records within each year), reported as its median kappa_0, the excess
-kappa / kappa_0, and a one-sided permutation p-value.
+records within each year), reported as its median PR_0, the excess
+PR / PR_0, and a one-sided permutation p-value.
 
 Intervals are 95% BCa from a cluster bootstrap over offices, with cA and cB on
-the same resamples so that kappa's interval is paired.
+the same resamples so that PR's interval is paired.
 
 Run from project root:
     uv run run_persistence_analysis.py [--n-boot 20000] [--n-perm 10000]
@@ -58,7 +58,7 @@ def load_attributed(data_path: Path, primes_path: Path) -> pd.DataFrame:
 def summarise(result: dict, n_boot: int, n_perm: int, seed: int) -> pd.DataFrame:
     """One row per statistic, with BCa intervals where they apply."""
     rows = []
-    for stat in ("cA", "cB", "kappa"):
+    for stat in ("cA", "cB", "pr"):
         low, high = bca_interval(
             result[stat], result[f"{stat}_boot"], result[f"{stat}_jack"], CI_LEVEL
         )
@@ -71,17 +71,17 @@ def summarise(result: dict, n_boot: int, n_perm: int, seed: int) -> pd.DataFrame
             }
         )
 
-    null = result["kappa_null"]
+    null = result["pr_null"]
     null_low, null_median, null_high = np.percentile(null, [2.5, 50, 97.5])
-    p_value = (1 + np.sum(null >= result["kappa"])) / (1 + len(null))
+    p_value = (1 + np.sum(null >= result["pr"])) / (1 + len(null))
     rows += [
         {
-            "statistic": "kappa_null",
+            "statistic": "pr_null",
             "estimate": null_median,
             "ci_low": null_low,
             "ci_high": null_high,
         },
-        {"statistic": "kappa_excess", "estimate": result["kappa"] / null_median},
+        {"statistic": "pr_excess", "estimate": result["pr"] / null_median},
         {"statistic": "p_value", "estimate": p_value},
     ]
     return pd.DataFrame(rows).assign(
@@ -107,10 +107,10 @@ def print_table(summary: pd.DataFrame) -> None:
     labels = {
         "cA": "cA  contractor retained",
         "cB": "cB  platform retained",
-        "kappa": "κ   cB ÷ cA",
-        "kappa_null": "κ₀  shuffle-null median",
-        "kappa_excess": "κ ÷ κ₀",
-        "p_value": "p   (one-sided, κ ≥ κ_null)",
+        "pr": "PR  cB ÷ cA",
+        "pr_null": "PR₀ shuffle-null median",
+        "pr_excess": "PR ÷ PR₀",
+        "p_value": "p   (one-sided, PR ≥ PR_null)",
     }
     print(f"    {'-' * 62}")
     for _, row in summary.iterrows():
@@ -123,7 +123,7 @@ def print_table(summary: pd.DataFrame) -> None:
             f"    {labels[row['statistic']]:<30s} {row['estimate']:>7.4f}  {interval}"
         )
     print(f"    {'-' * 62}")
-    print("    intervals: 95% BCa over offices; κ₀ interval: null 2.5–97.5th pct")
+    print("    intervals: 95% BCa over offices; PR₀ interval: null 2.5–97.5th pct")
 
 
 def parse_args() -> argparse.Namespace:

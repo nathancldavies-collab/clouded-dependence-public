@@ -8,9 +8,9 @@ and years:
 
     cA = retained / at risk, suppliers keyed by contractor  (naive view)
     cB = retained / at risk, suppliers keyed by platform    (unclouded view)
-    kappa = cB / cA
+    PR = cB / cA                                            (persistence ratio)
 
-The unclouded view is a coarsening of the naive one, so kappa >= 1 almost
+The unclouded view is a coarsening of the naive one, so PR >= 1 almost
 mechanically. The null is therefore a label shuffle: platforms are permuted
 across records within each year, which keeps every platform's yearly record
 count but breaks any tie between buyer and platform.
@@ -91,11 +91,11 @@ def persistence(
     records: pd.DataFrame, n_boot: int, n_perm: int, seed: int
 ) -> dict[str, np.ndarray | float | int]:
     """
-    cA, cB and kappa, with their bootstrap and jackknife replicates and the
-    permutation null for kappa.
+    cA, cB and PR, with their bootstrap and jackknife replicates and the
+    permutation null for PR.
 
     The bootstrap resamples buyers with replacement, each carrying all its
-    pairs; cA and cB share the resamples, so kappa's draws are paired. The
+    pairs; cA and cB share the resamples, so PR's draws are paired. The
     jackknife leaves out one buyer at a time, in closed form.
     """
     rng = np.random.default_rng(seed)
@@ -131,9 +131,9 @@ def persistence(
     for label, values in draws.items():
         result[f"{label}_boot"] = values
 
-    result["kappa"] = result["cB"] / result["cA"]
-    result["kappa_boot"] = draws["cB"] / draws["cA"]
-    result["kappa_jack"] = result["cB_jack"] / result["cA_jack"]
+    result["pr"] = result["cB"] / result["cA"]
+    result["pr_boot"] = draws["cB"] / draws["cA"]
+    result["pr_jack"] = result["cB_jack"] / result["cA_jack"]
 
     # The shuffle leaves the naive view untouched, so cA is fixed under the null.
     null = np.empty(n_perm)
@@ -143,5 +143,5 @@ def persistence(
             codes["buyer"], codes["year"], shuffled, n_buyers
         )
         null[p] = retained.sum() / at_risk.sum() / result["cA"]
-    result["kappa_null"] = null
+    result["pr_null"] = null
     return result

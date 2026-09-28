@@ -23,3 +23,6 @@ plot-concentration *args="--file-type=pdf":
 
 persistence *args="--table":
     uv run run_persistence_analysis.py {{args}}
+
+plot-persistence *args="--file-type=pdf":
+    uv run plot_persistence.py {{args}}
