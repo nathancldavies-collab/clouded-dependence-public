@@ -19,6 +19,7 @@ Run from project root:
     uv run validation/calculate_agreement.py --part a
     uv run validation/calculate_agreement.py --part a --binary --confidence medium high
     uv run validation/calculate_agreement.py --part b --input some/other/file.csv
+    uv run validation/calculate_agreement.py --part a --compare pipeline llm
 """
 
 import argparse
@@ -39,12 +40,41 @@ from clouded_deps.directories import OUTPUTS_DIR
 RATINGS_DIR = OUTPUTS_DIR / "validation"
 
 # Filename stems used when no explicit --input is given; build_validation_sample
-# writes "<stem>_<RATER>_seed<SEED>.xlsx".
+# writes "<stem>_<RATER>_seed<SEED>.xlsx", and finished ratings are saved with
+# COMPLETE_PREFIX in front so blank or in-progress sheets are never picked up.
+COMPLETE_PREFIX = "complete_"
 PART_STEMS = {
     "a": "part_a_classification_rating",
     "b": "part_b_attribution_rating",
 }
 PART_LABELS = {"a": "classification", "b": "platform"}
+
+# Machine ratings (--compare) come from the sample CSV that build_validation_sample
+# writes alongside the workbooks: "<stem>_seed<SEED>.csv".
+SAMPLE_STEMS = {
+    "a": "part_a_classification_sample",
+    "b": "part_b_attribution_sample",
+}
+REFERENCE_RATERS = {"pipeline": "PIPELINE", "llm": "LLM"}
+REFERENCE_COLS = {
+    "a": {"pipeline": "cloud_classification", "llm": "llm_classification"},
+    "b": {"pipeline": "final_platform", "llm": "llm_platform"},
+}
+# Part B: mirrors build_validation_sample.PLATFORM_OPTIONS. The pipeline falls
+# back to the contractor name for unattributed records, so any machine label
+# outside the raters' option list is recoded to UNATTRIBUTED_PLATFORM.
+PLATFORM_LABELS = [
+    "AWS",
+    "Azure",
+    "Google Cloud",
+    "Oracle Cloud",
+    "IBM Cloud",
+    "Salesforce",
+    "Multi-cloud",
+    "Unspecified",
+    "N/A",
+]
+UNATTRIBUTED_PLATFORM = "Unspecified"
 
 MIN_RATERS = 2
 
@@ -119,6 +149,11 @@ class Ratings:
             self.long[self.long[RATER_COL].isin(raters)].reset_index(drop=True)
         )
 
+    def for_units(self, units: list[str]) -> "Ratings":
+        return Ratings(
+            self.long[self.long[UNIT_COL].isin(units)].reset_index(drop=True)
+        )
+
     def filter_confidence(self, levels: list[str]) -> "Ratings":
         """Keep only ratings the rater marked with one of ``levels``.
 
@@ -158,6 +193,29 @@ def load_long(path: Path) -> Ratings:
     """Load a file that is already in the intermediate long format."""
     read = pd.read_csv if path.suffix.lower() == ".csv" else pd.read_excel
     return Ratings.from_frame(read(path), source=path.name)
+
+
+def load_reference(path: Path, part: str, source: str) -> Ratings:
+    """Load one machine source (pipeline or LLM) from a validation sample CSV."""
+    sample = pd.read_csv(path, low_memory=False)
+    labels = sample[REFERENCE_COLS[part][source]].astype("string").str.strip()
+    if part == "b":
+        outside = labels.notna() & ~labels.isin(PLATFORM_LABELS)
+        if outside.any():
+            print(
+                f"[info] {source}: recoded {int(outside.sum())} label(s) outside the "
+                f"rater options to '{UNATTRIBUTED_PLATFORM}'",
+                file=sys.stderr,
+            )
+        labels = labels.mask(outside, UNATTRIBUTED_PLATFORM)
+    df = pd.DataFrame(
+        {
+            UNIT_COL: sample["original_prime_id"],
+            RATER_COL: REFERENCE_RATERS[source],
+            LABEL_COL: labels,
+        }
+    )
+    return Ratings.from_frame(df, source=f"{path.name} ({source})")
 
 
 Loader = Callable[[Path], Ratings]
@@ -228,38 +286,81 @@ def percent_agreement(ratings: Ratings) -> float | None:
     return float((both.iloc[:, 0] == both.iloc[:, 1]).mean())
 
 
-def pairwise_alphas(ratings: Ratings) -> dict[tuple[str, str], float | None]:
-    raters = ratings.raters
-    out: dict[tuple[str, str], float | None] = {}
-    for i, first in enumerate(raters):
-        for second in raters[i + 1 :]:
-            pair = ratings.subset([first, second])
-            out[(first, second)] = alpha(pair) if pair.overlapping_units() else None
-    return out
+@dataclass(frozen=True)
+class PairStats:
+    alpha: float
+    agreement: float | None
+    n_units: int
+
+
+def pair_stats(ratings: Ratings, first: str, second: str) -> PairStats | None:
+    """Alpha and raw agreement between two raters, or None if they share no unit."""
+    pair = ratings.subset([first, second])
+    shared = pair.overlapping_units()
+    if not shared:
+        return None
+    return PairStats(alpha(pair), percent_agreement(pair), len(shared))
+
+
+def human_raters(ratings: Ratings) -> list[str]:
+    machines = set(REFERENCE_RATERS.values())
+    return [r for r in ratings.raters if r not in machines]
+
+
+def machine_raters(ratings: Ratings) -> list[str]:
+    return [r for r in REFERENCE_RATERS.values() if r in ratings.raters]
 
 
 # ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
-def report(ratings: Ratings, part: str, scheme: str):
-    overlap = ratings.overlapping_units()
-    print(f"\n=== Krippendorff's alpha — part {part.upper()} ({scheme}) ===")
-    print(f"  Raters:            {', '.join(ratings.raters)}")
-    print(f"  Units rated:       {len(ratings.units)}")
-    print(f"  Units with >=2 raters: {len(overlap)}")
-    print(f"  Distinct labels:   {len(ratings.labels)}")
+def format_stats(stats: PairStats | None) -> str:
+    if stats is None:
+        return "n/a (no shared units)"
+    shown = f"alpha {stats.alpha:.3f}"
+    if stats.agreement is not None:
+        shown += f", agreement {stats.agreement:.1%}"
+    return shown + f" (n={stats.n_units})"
 
-    print(f"\n  alpha (nominal):   {alpha(ratings):.3f}")
-    agreement = percent_agreement(ratings)
+
+def report_humans(ratings: Ratings):
+    humans = ratings.subset(human_raters(ratings))
+    print("\n--- Human ---")
+    print(f"  Raters:            {', '.join(humans.raters)}")
+    print(f"  Units rated:       {len(humans.units)}")
+    print(f"  Units with >=2 raters: {len(humans.overlapping_units())}")
+    print(f"  Distinct labels:   {len(humans.labels)}")
+
+    print(f"\n  alpha (nominal):   {alpha(humans):.3f}")
+    agreement = percent_agreement(humans)
     if agreement is not None:
         print(f"  raw agreement:     {agreement:.1%}")
 
-    pairs = pairwise_alphas(ratings)
-    if len(pairs) > 1:
-        print("\n  Pairwise alpha:")
-        for (first, second), value in pairs.items():
-            shown = "n/a (no shared units)" if value is None else f"{value:.3f}"
-            print(f"    {first} vs {second}: {shown}")
+
+def report_human_machine(ratings: Ratings, machine: str):
+    """Each human against one machine rater, plus the mean across humans."""
+    print(f"\n--- Human-{machine} ---")
+    per_human = {
+        human: pair_stats(ratings, human, machine) for human in human_raters(ratings)
+    }
+    for human, stats in per_human.items():
+        print(f"    {human} vs {machine}: {format_stats(stats)}")
+
+    scored = [s for s in per_human.values() if s is not None]
+    if not scored:
+        print("  mean alpha:        n/a")
+        return
+    print(f"\n  mean alpha:        {np.mean([s.alpha for s in scored]):.3f}")
+    agreements = [s.agreement for s in scored if s.agreement is not None]
+    if agreements:
+        print(f"  mean agreement:    {np.mean(agreements):.1%}")
+
+
+def report(ratings: Ratings, part: str, scheme: str):
+    print(f"\n=== Krippendorff's alpha — part {part.upper()} ({scheme}) ===")
+    report_humans(ratings)
+    for machine in machine_raters(ratings):
+        report_human_machine(ratings, machine)
 
     print("\n  Label counts per rater:")
     counts = ratings.long.groupby([LABEL_COL, RATER_COL]).size().unstack(fill_value=0)
@@ -274,7 +375,14 @@ def resolve_inputs(args: argparse.Namespace) -> list[Path]:
     if args.input:
         return [Path(p) for p in args.input]
     suffix = f"*_seed{args.seed}.xlsx" if args.seed is not None else "*.xlsx"
-    return sorted(args.ratings_dir.glob(f"{PART_STEMS[args.part]}_{suffix}"))
+    return sorted(
+        args.ratings_dir.glob(f"{COMPLETE_PREFIX}{PART_STEMS[args.part]}_{suffix}")
+    )
+
+
+def resolve_sample(args: argparse.Namespace) -> list[Path]:
+    seed = args.seed if args.seed is not None else "*"
+    return sorted(args.ratings_dir.glob(f"{SAMPLE_STEMS[args.part]}_seed{seed}.csv"))
 
 
 def parse_args() -> argparse.Namespace:
@@ -314,6 +422,17 @@ def parse_args() -> argparse.Namespace:
         help="Part A only: collapse classifications to cloud / non-cloud.",
     )
     parser.add_argument(
+        "--compare",
+        nargs="*",
+        choices=sorted(REFERENCE_RATERS),
+        default=["llm"],
+        help=(
+            "Machine ratings from the sample CSV to compare the humans against: "
+            "the final pipeline label and/or the raw LLM label (default: llm; "
+            "pass --compare with no value for humans only)."
+        ),
+    )
+    parser.add_argument(
         "--loader",
         choices=sorted(LOADERS),
         default=DEFAULT_LOADER,
@@ -351,6 +470,23 @@ def main() -> int:
             f"kept {len(ratings.long)} of {before} ratings"
         )
 
+    # Added after the confidence filter, which applies to the human raters only;
+    # machine ratings are restricted to the units the humans still cover.
+    if args.compare:
+        samples = resolve_sample(args)
+        if len(samples) != 1:
+            print(
+                f"[error] --compare needs exactly one sample CSV for part "
+                f"{args.part}, found {len(samples)}; pass --seed to pick one",
+                file=sys.stderr,
+            )
+            return 1
+        references = [
+            load_reference(samples[0], args.part, source) for source in args.compare
+        ]
+        ratings = combine([ratings, *references]).for_units(ratings.units)
+        print(f"Compared against {', '.join(args.compare)} from {samples[0]}")
+
     scheme = PART_LABELS[args.part]
     if args.binary:
         if args.part != "a":
@@ -368,7 +504,7 @@ def main() -> int:
         ratings = ratings.map_labels(BINARY_MAP)
         scheme = "classification, binary cloud/non-cloud"
 
-    problems = validate(ratings)
+    problems = validate(ratings.subset(human_raters(ratings)))
     if problems:
         print("\n[error] cannot compute alpha:", file=sys.stderr)
         for problem in problems:
