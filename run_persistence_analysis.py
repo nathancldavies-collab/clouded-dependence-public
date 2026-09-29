@@ -10,24 +10,25 @@ used again next year? It is computed twice:
   - cB: suppliers keyed by platform   (unclouded view)
   - PR = cB / cA, the persistence ratio
 
-Two scopes (--scope):
+Unattributed records of a contractor attributed at least once are keyed by
+its modal platform; those of never-attributed contractors keep their UEI in
+both views. Three scopes (--scope):
 
-  - attributed: platform-attributed cloud records only (the headline).
-    Unattributed records have the same key in both views and would only pull
-    PR toward 1.
-  - imputed: all cloud records of contractors attributed at least once, the
-    unattributed ones keyed by the contractor's modal platform (robustness).
+  - all: every cloud record (the headline).
+  - imputed: drops the never-attributed contractors (robustness).
+  - attributed: platform-attributed records only, no imputation (robustness).
 
 Since platforms are fewer than contractors, PR > 1 almost by construction.
-The test is therefore against a label-shuffle null (platforms permuted across
-records within each year), reported as its median PR_0, the excess
-PR / PR_0, and a one-sided permutation p-value.
+The test is therefore against a label-shuffle null (attributed platforms
+permuted across records within each year, imputed platforms across
+contractors), reported as its median PR_0, the excess PR / PR_0, and a
+one-sided permutation p-value.
 
 Intervals are 95% BCa from a cluster bootstrap over offices, with cA and cB on
 the same resamples so that PR's interval is paired.
 
 Run from project root:
-    uv run run_persistence_analysis.py [--scope attributed|imputed]
+    uv run run_persistence_analysis.py [--scope all|imputed|attributed]
                                        [--n-boot 20000] [--n-perm 10000]
                                        [--table]
 """
@@ -44,26 +45,29 @@ from clouded_deps.pipeline.persistence import (
     impute_platforms,
     persistence,
 )
-from clouded_deps.pipeline.views import ATTRIBUTED_METHODS, load_records
+from clouded_deps.pipeline.views import load_records
 from clouded_deps.stats import bca_interval
 
 CI_LEVEL = 0.95
-SCOPES = ("attributed", "imputed")
+SCOPES = ("all", "imputed", "attributed")
+# Key sources each scope keeps (see `impute_platforms`).
+SCOPE_SOURCES = {
+    "all": {"attributed", "imputed", "contractor"},
+    "imputed": {"attributed", "imputed"},
+    "attributed": {"attributed"},
+}
 
 
 def summary_path(out_dir: Path, scope: str) -> Path:
     """The summary table for a scope; the headline scope keeps the plain name."""
-    suffix = "" if scope == "attributed" else f"_{scope}"
+    suffix = "" if scope == "all" else f"_{scope}"
     return out_dir / f"persistence_summary{suffix}.csv"
 
 
 def load_scope(data_path: Path, primes_path: Path, scope: str) -> pd.DataFrame:
     """The cloud records in `scope`, each with its buyer."""
-    records = load_records(data_path)
-    if scope == "attributed":
-        records = records[records["attribution_method"].isin(ATTRIBUTED_METHODS)]
-    else:
-        records = impute_platforms(records)
+    records = impute_platforms(load_records(data_path))
+    records = records[records["key_source"].isin(SCOPE_SOURCES[scope])]
     primes = pd.read_csv(
         primes_path,
         usecols=["Award ID", "Awarding Department/Agency", "Awarding Office"],
@@ -177,9 +181,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--scope",
         choices=SCOPES,
-        default="attributed",
-        help="Records in scope: attributed only, or all records of attributed"
-        " contractors with platforms imputed (default: attributed)",
+        default="all",
+        help="Records in scope: every cloud record; only contractors attributed at"
+        " least once; or attributed records only (default: all)",
     )
     parser.add_argument(
         "--n-boot",

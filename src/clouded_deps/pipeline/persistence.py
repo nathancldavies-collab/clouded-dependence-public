@@ -10,10 +10,18 @@ and years:
     cB = retained / at risk, suppliers keyed by platform    (unclouded view)
     PR = cB / cA                                            (persistence ratio)
 
+Each record's unclouded key has a source (`key_source`):
+
+    attributed   its own platform attribution
+    imputed      unattributed, keyed by its contractor's modal platform
+    contractor   unattributed, contractor never attributed: keeps its UEI
+
 The unclouded view is a coarsening of the naive one, so PR >= 1 almost
-mechanically. The null is therefore a label shuffle: platforms are permuted
-across records within each year, which keeps every platform's yearly record
-count but breaks any tie between buyer and platform.
+mechanically. The null is therefore a label shuffle that breaks any tie between
+buyer and platform: attributed platforms are permuted across records within
+each year, and imputed platforms are permuted across contractors, so all of a
+contractor's imputed records still share one platform. Contractor-keyed records
+are the same in both views and stay fixed.
 
 Everything below runs on integer codes, so a permutation or a bootstrap draw
 costs a few array passes rather than a pandas groupby.
@@ -25,6 +33,7 @@ import pandas as pd
 from clouded_deps.pipeline.views import ATTRIBUTED_METHODS
 
 VIEWS = ("naive", "unclouded")
+KEY_SOURCES = ("attributed", "imputed", "contractor")
 
 
 def attach_buyer(records: pd.DataFrame, primes: pd.DataFrame) -> pd.DataFrame:
@@ -43,12 +52,13 @@ def attach_buyer(records: pd.DataFrame, primes: pd.DataFrame) -> pd.DataFrame:
 
 def impute_platforms(records: pd.DataFrame) -> pd.DataFrame:
     """
-    Records of every contractor with at least one attributed record, with its
-    unattributed records keyed by its modal attributed platform.
+    Key the unattributed records of every contractor with at least one
+    attributed record by its modal attributed platform, and add `key_source`.
 
     Without this, a contractor attributed in one year and not the next would
     change key in the unclouded view only, which reads as spurious platform
     churn. Ties between platforms go to the first name alphabetically.
+    Unattributed records of never-attributed contractors keep their UEI.
     """
     attributed = records["attribution_method"].isin(ATTRIBUTED_METHODS)
     modal = (
@@ -61,12 +71,13 @@ def impute_platforms(records: pd.DataFrame) -> pd.DataFrame:
         .drop_duplicates("contractor")
         .set_index("contractor")["final_platform"]
     )
-    known = records["contractor"].isin(modal.index)
-    records = records[known]
+    imputed = ~attributed & records["contractor"].isin(modal.index)
+    source = np.select([attributed, imputed], KEY_SOURCES[:2], KEY_SOURCES[2])
     return records.assign(
         unclouded=records["unclouded"].where(
-            attributed[known], records["contractor"].map(modal)
-        )
+            ~imputed, records["contractor"].map(modal)
+        ),
+        key_source=source,
     )
 
 
@@ -107,11 +118,38 @@ def shuffle_within_year(
     return out
 
 
+def shuffle_platforms(
+    codes: dict[str, np.ndarray], rng: np.random.Generator
+) -> np.ndarray:
+    """
+    One draw of the null for the unclouded key.
+
+    Attributed platforms are permuted across records within each year. Imputed
+    platforms are permuted across contractors, keeping the imputation's rule
+    that one contractor's imputed records share a platform. Contractor-keyed
+    records stay fixed.
+    """
+    key, source = codes["unclouded"], codes["source"]
+    out = key.copy()
+    attributed = source == "attributed"
+    out[attributed] = shuffle_within_year(
+        key[attributed], codes["year"][attributed], rng
+    )
+    imputed = source == "imputed"
+    if imputed.any():
+        contractors, idx = np.unique(codes["naive"][imputed], return_inverse=True)
+        platform = np.empty(len(contractors), dtype=key.dtype)
+        platform[idx] = key[imputed]
+        out[imputed] = rng.permutation(platform)[idx]
+    return out
+
+
 def encode(records: pd.DataFrame) -> dict[str, np.ndarray]:
     """Integer codes for buyer, year and each view's supplier key."""
     codes = {
         "buyer": pd.factorize(records["buyer"])[0],
         "year": (records["fiscal_year"] - records["fiscal_year"].min()).to_numpy(),
+        "source": records["key_source"].to_numpy(),
     }
     for view in VIEWS:
         codes[view] = pd.factorize(records[view])[0]
@@ -169,7 +207,7 @@ def persistence(
     # The shuffle leaves the naive view untouched, so cA is fixed under the null.
     null = np.empty(n_perm)
     for p in range(n_perm):
-        shuffled = shuffle_within_year(codes["unclouded"], codes["year"], rng)
+        shuffled = shuffle_platforms(codes, rng)
         at_risk, retained = retention_counts(
             codes["buyer"], codes["year"], shuffled, n_buyers
         )

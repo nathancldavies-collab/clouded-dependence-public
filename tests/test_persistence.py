@@ -36,7 +36,7 @@ ROWS = [
 @pytest.fixture
 def records() -> pd.DataFrame:
     df = pd.DataFrame(ROWS, columns=["buyer", "fiscal_year", "naive", "unclouded"])
-    return df.assign(dollars=1.0)
+    return df.assign(dollars=1.0, key_source="attributed")
 
 
 def _counts(records: pd.DataFrame, view: str) -> dict[str, tuple[int, int]]:
@@ -83,7 +83,7 @@ def test_reseller_switch_lowers_platform_retention(records: pd.DataFrame) -> Non
     switch = pd.DataFrame(
         [("O4", 2017, "Z", "AWS"), ("O4", 2018, "Z", "Azure")],
         columns=["buyer", "fiscal_year", "naive", "unclouded"],
-    ).assign(dollars=1.0)
+    ).assign(dollars=1.0, key_source="attributed")
     counts = _counts(pd.concat([records, switch]), "unclouded")
     assert counts["O4"] == (1, 0)
     assert _counts(pd.concat([records, switch]), "naive")["O4"] == (1, 1)
@@ -100,7 +100,7 @@ def test_shuffle_keeps_yearly_counts(records: pd.DataFrame) -> None:
 
 
 def test_impute_platforms_uses_modal_platform() -> None:
-    """Unattributed rows take their contractor's modal platform; others drop out."""
+    """Unattributed rows take their contractor's modal platform, if it has one."""
     rows = pd.DataFrame(
         [
             # contractor, final_platform, attribution_method
@@ -115,9 +115,16 @@ def test_impute_platforms_uses_modal_platform() -> None:
         ],
         columns=["contractor", "final_platform", "attribution_method"],
     )
-    rows = rows.assign(unclouded=rows["final_platform"])
-    # Z was never attributed; Y's AWS/Azure tie goes to AWS alphabetically.
-    assert ps.impute_platforms(rows)["unclouded"].tolist() == [
+    # views.load_records keys unattributed rows by contractor in both views.
+    rows = rows.assign(
+        unclouded=rows["final_platform"].where(
+            rows["attribution_method"] != "cloud_unattributed_contractor",
+            rows["contractor"],
+        )
+    )
+    imputed = ps.impute_platforms(rows)
+    # Y's AWS/Azure tie goes to AWS alphabetically; Z was never attributed.
+    assert imputed["unclouded"].tolist() == [
         "Azure",
         "Azure",
         "AWS",
@@ -125,7 +132,64 @@ def test_impute_platforms_uses_modal_platform() -> None:
         "Azure",
         "AWS",
         "AWS",
+        "Z",
     ]
+    assert imputed["key_source"].tolist() == [
+        "attributed",
+        "attributed",
+        "attributed",
+        "imputed",
+        "attributed",
+        "attributed",
+        "imputed",
+        "contractor",
+    ]
+
+
+def test_null_keeps_imputation_structure() -> None:
+    """
+    Attributed labels keep their yearly counts, each contractor's imputed
+    records keep sharing one platform, and contractor-keyed records stay put.
+    """
+    rows = pd.DataFrame(
+        [
+            # buyer, year, contractor, platform, source
+            ("O1", 2017, "A", "Azure", "attributed"),
+            ("O2", 2017, "B", "AWS", "attributed"),
+            ("O3", 2018, "C", "GCP", "attributed"),
+            ("O1", 2018, "D", "Oracle", "attributed"),
+            ("O1", 2017, "A", "Azure", "imputed"),
+            ("O2", 2018, "A", "Azure", "imputed"),
+            ("O3", 2017, "B", "AWS", "imputed"),
+            ("O1", 2018, "B", "AWS", "imputed"),
+            ("O2", 2017, "C", "GCP", "imputed"),
+            ("O3", 2018, "Z", "Z", "contractor"),
+        ],
+        columns=["buyer", "fiscal_year", "naive", "unclouded", "key_source"],
+    )
+    codes = ps.encode(rows)
+    source = codes["source"]
+    rng = np.random.default_rng(0)
+    seen = set()
+    for _ in range(50):
+        shuffled = ps.shuffle_platforms(codes, rng)
+        attributed = source == "attributed"
+        for year in (0, 1):
+            in_year = attributed & (codes["year"] == year)
+            assert sorted(shuffled[in_year]) == sorted(codes["unclouded"][in_year])
+        imputed = source == "imputed"
+        by_contractor = pd.Series(shuffled[imputed]).groupby(codes["naive"][imputed])
+        assert (by_contractor.nunique() == 1).all()
+        # Contractors swap platforms, so the set of imputed platforms is kept.
+        assert sorted(by_contractor.first()) == sorted(
+            pd.Series(codes["unclouded"][imputed])
+            .groupby(codes["naive"][imputed])
+            .first()
+        )
+        seen.add(tuple(by_contractor.first()))
+        fixed = source == "contractor"
+        assert (shuffled[fixed] == codes["unclouded"][fixed]).all()
+    assert len(seen) > 1
 
 
 def test_attach_buyer_uses_department_and_prime() -> None:

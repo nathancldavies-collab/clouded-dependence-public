@@ -16,7 +16,7 @@ Error bars: PR has its 95% BCa interval over offices; PR_0 has the
 2.5-97.5th percentiles of the null distribution.
 
 Run from project root (after `just persistence`):
-    uv run plot_persistence.py [--scope attributed|imputed] [--file-type pdf]
+    uv run plot_persistence.py [--scope all|imputed|attributed] [--file-type pdf]
 
 Design notes:
   - Styling is imported from plot_concentration so the figures match: the null
@@ -55,7 +55,7 @@ def format_p(p: float, n_perm: int) -> str:
     # With no null draw >= PR, p = 1 / (n_perm + 1): all we know is p < 1 / n_perm.
     if p <= 1 / (n_perm + 1) * 1.000001:
         return f"p < {1 / n_perm:.2g}"
-    return f"p = {p:.3f}" if p >= 0.001 else f"p = {p:.1e}"
+    return f"p = {p:.3f}" if p >= 0.001 else f"p = {p:.1g}"
 
 
 def plot_persistence(summary: pd.DataFrame, output_path: Path) -> Path:
@@ -144,8 +144,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--scope",
         choices=SCOPES,
-        default="attributed",
-        help="Which run_persistence_analysis.py scope to plot (default: attributed)",
+        default="all",
+        help="Which run_persistence_analysis.py scope to plot (default: all)",
     )
     parser.add_argument(
         "--file-type",
