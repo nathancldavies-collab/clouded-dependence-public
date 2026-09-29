@@ -99,57 +99,31 @@ def test_shuffle_keeps_yearly_counts(records: pd.DataFrame) -> None:
             assert sorted(shuffled[in_year]) == sorted(codes["unclouded"][in_year])
 
 
-def test_impute_platforms_uses_modal_platform() -> None:
-    """Unattributed rows take their contractor's modal platform, if it has one."""
+def test_label_key_sources_marks_attributed_rows() -> None:
+    """Attributed rows (any phase) carry a platform; the rest keep their UEI."""
     rows = pd.DataFrame(
-        [
-            # contractor, final_platform, attribution_method
-            ("X", "Azure", "phase2_description"),
-            ("X", "Azure", "phase1_direct"),
-            ("X", "AWS", "phase2_description"),
-            ("X", "X Inc", "cloud_unattributed_contractor"),
-            ("Y", "Azure", "phase3_pattern"),
-            ("Y", "AWS", "phase3_pattern"),
-            ("Y", "Y Inc", "cloud_unattributed_contractor"),
-            ("Z", "Z Inc", "cloud_unattributed_contractor"),
-        ],
-        columns=["contractor", "final_platform", "attribution_method"],
+        {
+            "attribution_method": [
+                "phase1_direct",
+                "phase2_description",
+                "phase3_pattern",
+                "cloud_unattributed_contractor",
+            ]
+        }
     )
-    # views.load_records keys unattributed rows by contractor in both views.
-    rows = rows.assign(
-        unclouded=rows["final_platform"].where(
-            rows["attribution_method"] != "cloud_unattributed_contractor",
-            rows["contractor"],
-        )
-    )
-    imputed = ps.impute_platforms(rows)
-    # Y's AWS/Azure tie goes to AWS alphabetically; Z was never attributed.
-    assert imputed["unclouded"].tolist() == [
-        "Azure",
-        "Azure",
-        "AWS",
-        "Azure",
-        "Azure",
-        "AWS",
-        "AWS",
-        "Z",
-    ]
-    assert imputed["key_source"].tolist() == [
+    labelled = ps.label_key_sources(rows)
+    assert labelled["key_source"].tolist() == [
         "attributed",
         "attributed",
         "attributed",
-        "imputed",
-        "attributed",
-        "attributed",
-        "imputed",
         "contractor",
     ]
 
 
 def test_null_shuffles_platforms_by_record() -> None:
     """
-    Platform labels, attributed and imputed alike, move between records of the
-    same year; contractor-keyed records stay put.
+    Platform labels move between attributed records of the same year;
+    contractor-keyed records stay put.
     """
     rows = pd.DataFrame(
         [
@@ -158,11 +132,11 @@ def test_null_shuffles_platforms_by_record() -> None:
             ("O2", 2017, "B", "AWS", "attributed"),
             ("O3", 2018, "C", "GCP", "attributed"),
             ("O1", 2018, "D", "Oracle", "attributed"),
-            ("O1", 2017, "A", "Azure", "imputed"),
-            ("O2", 2018, "A", "Azure", "imputed"),
-            ("O3", 2017, "B", "AWS", "imputed"),
-            ("O1", 2018, "B", "AWS", "imputed"),
-            ("O2", 2017, "C", "GCP", "imputed"),
+            ("O1", 2017, "A", "Azure", "attributed"),
+            ("O2", 2018, "A", "Azure", "attributed"),
+            ("O3", 2017, "B", "AWS", "attributed"),
+            ("O1", 2018, "B", "AWS", "attributed"),
+            ("O2", 2017, "C", "GCP", "attributed"),
             ("O3", 2018, "Z", "Z", "contractor"),
         ],
         columns=["buyer", "fiscal_year", "naive", "unclouded", "key_source"],

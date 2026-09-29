@@ -11,13 +11,11 @@ get used again next year? It is computed twice:
   - cB: suppliers keyed by platform   (unclouded view)
   - PR = cB / cA, the persistence ratio
 
-Unattributed records of a contractor attributed at least once are keyed by
-its modal platform; those of never-attributed contractors keep their UEI in
-both views. Three scopes (--scope):
+Unattributed records keep their contractor UEI in both views; no platform is
+imputed. Two scopes (--scope):
 
   - all: every cloud record (the headline).
-  - imputed: drops the never-attributed contractors (robustness).
-  - attributed: platform-attributed records only, no imputation (robustness).
+  - attributed: platform-attributed records only (robustness).
 
 Since platforms are fewer than contractors, PR > 1 almost by construction.
 The test is therefore against a record-level label-shuffle null (platforms
@@ -28,7 +26,7 @@ Intervals are 95% BCa from a cluster bootstrap over offices, with cA and cB on
 the same resamples so that PR's interval is paired.
 
 Run from project root:
-    uv run run_persistence_analysis.py [--scope all|imputed|attributed]
+    uv run run_persistence_analysis.py [--scope all|attributed]
                                        [--n-boot 20000] [--n-perm 10000]
                                        [--table]
 """
@@ -42,18 +40,17 @@ import pandas as pd
 from clouded_deps.directories import DATA_DIR, OUTPUTS_DIR
 from clouded_deps.pipeline.persistence import (
     attach_buyer,
-    impute_platforms,
+    label_key_sources,
     persistence,
 )
 from clouded_deps.pipeline.views import load_records
 from clouded_deps.stats import bca_interval
 
 CI_LEVEL = 0.95
-SCOPES = ("all", "imputed", "attributed")
-# Key sources each scope keeps (see `impute_platforms`).
+SCOPES = ("all", "attributed")
+# Key sources each scope keeps (see `label_key_sources`).
 SCOPE_SOURCES = {
-    "all": {"attributed", "imputed", "contractor"},
-    "imputed": {"attributed", "imputed"},
+    "all": {"attributed", "contractor"},
     "attributed": {"attributed"},
 }
 
@@ -66,7 +63,7 @@ def summary_path(out_dir: Path, scope: str) -> Path:
 
 def load_scope(data_path: Path, primes_path: Path, scope: str) -> pd.DataFrame:
     """The cloud records in `scope`, each with its buyer."""
-    records = impute_platforms(load_records(data_path))
+    records = label_key_sources(load_records(data_path))
     records = records[records["key_source"].isin(SCOPE_SOURCES[scope])]
     primes = pd.read_csv(
         primes_path,
@@ -182,8 +179,8 @@ def parse_args() -> argparse.Namespace:
         "--scope",
         choices=SCOPES,
         default="all",
-        help="Records in scope: every cloud record; only contractors attributed at"
-        " least once; or attributed records only (default: all)",
+        help="Records in scope: every cloud record, or attributed records only"
+        " (default: all)",
     )
     parser.add_argument(
         "--n-boot",

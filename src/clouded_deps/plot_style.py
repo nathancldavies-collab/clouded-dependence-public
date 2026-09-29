@@ -38,6 +38,9 @@ DEFAULT_K = 3
 # these fractions of \textwidth.
 BARBELL_WIDTH_FRAC = 0.60
 EGO_WIDTH_FRAC = 0.39
+# Likewise the two-panel persistence figure and its worked example.
+PERSISTENCE_WIDTH_FRAC = 0.58
+PERSISTENCE_EXAMPLE_WIDTH_FRAC = 0.41
 
 
 def figure_size_in(path: Path, dpi: float = 200) -> tuple[float, float]:

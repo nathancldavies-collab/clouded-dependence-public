@@ -14,17 +14,16 @@ Thin vertical ties link each contractor to the platform it is keyed by; an
 arrow between years marks a supplier retained from one year to the next.
 
 The example is found, not hand-picked. A candidate is an office and window
-where one platform is present every year, every record on it is directly
-attributed (no imputation), and the contractors behind it share none from one
-year to the next. Candidates are ranked by how few other records the office
+where one platform is present every year and the contractors behind it share
+none from one year to the next. Candidates are ranked by how few other records the office
 has in the window (the fewer, the cleaner the picture), then by dollars on
 the platform. The top candidate for three years is GSA Region 10, FY2021-2023,
 whose Microsoft support contract for the Office of Special Counsel ran through
 a different reseller each year.
 
-The page is saved at exactly the size of `plot_persistence.py`'s figure, so
-the two sit side by side at the same scale; the gap between the rows
-stretches to fill the height.
+The page is sized to sit beside `plot_persistence.py`'s figure in LaTeX at the
+same scale and height (see PERSISTENCE_*_WIDTH_FRAC); the gap between the
+rows stretches to fill the height.
 
 Run from project root (after `uv run plot_persistence.py`):
     uv run plot_persistence_example.py [--years 3] [--rank 1] [--buyer "..."]
@@ -50,12 +49,15 @@ from matplotlib.transforms import Bbox
 from clouded_deps.directories import DATA_DIR, OUTPUTS_DIR
 from clouded_deps.plot_style import (
     NAIVE_COLOR,
+    PERSISTENCE_EXAMPLE_WIDTH_FRAC,
+    PERSISTENCE_WIDTH_FRAC,
     SPINE,
     SURFACE,
     TEXT_PRIMARY,
     TEXT_SECONDARY,
     UNCLOUDED_COLOR,
     figure_size_in,
+    partner_size_in,
 )
 from run_persistence_analysis import SCOPES, load_scope
 
@@ -141,8 +143,8 @@ def load_names(data_path: Path) -> pd.Series:
 def find_examples(records: pd.DataFrame, years: int) -> pd.DataFrame:
     """
     Offices and windows of `years` fiscal years where one platform is present
-    every year, all of its records are attributed, and the contractors behind
-    it share none from one year to the next. Best candidates first.
+    every year and the contractors behind it share none from one year to the
+    next. Best candidates first.
     """
     rows = []
     for buyer, office in records.groupby("buyer"):
@@ -150,10 +152,8 @@ def find_examples(records: pd.DataFrame, years: int) -> pd.DataFrame:
             span = office[office["fiscal_year"].between(start, start + years - 1)]
             if span["fiscal_year"].nunique() < years:
                 continue
-            platforms = span[span["key_source"] != "contractor"]
+            platforms = span[span["key_source"] == "attributed"]
             for platform, group in platforms.groupby("unclouded"):
-                if not (group["key_source"] == "attributed").all():
-                    continue
                 by_year = group.groupby("fiscal_year")["naive"].agg(set)
                 if len(by_year) < years or any(
                     a & b for a, b in zip(by_year, by_year.iloc[1:])
@@ -530,7 +530,7 @@ if __name__ == "__main__":
     if not args.find and not partner.exists():
         raise SystemExit(
             f"Missing {partner}\nRun `uv run plot_persistence.py --scope {args.scope}"
-            f" --file-type {args.file_type}` first; this figure matches its size."
+            f" --file-type {args.file_type}` first; this figure is sized to match it."
         )
 
     records = load_scope(args.data, args.primes, args.scope)
@@ -557,7 +557,11 @@ if __name__ == "__main__":
         records[(records["buyer"] == pick["buyer"]) & in_window],
         load_names(args.data),
         pick["platform"],
-        figure_size_in(partner),
+        partner_size_in(
+            figure_size_in(partner),
+            PERSISTENCE_WIDTH_FRAC,
+            PERSISTENCE_EXAMPLE_WIDTH_FRAC,
+        ),
         out_dir / f"persistence_example{suffix}.{args.file_type}",
     )
     print(f"  saved: {saved}")

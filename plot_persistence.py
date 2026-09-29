@@ -1,31 +1,36 @@
 #!/usr/bin/env python3
 """
-Bar Chart: Observed Platform Persistence vs the Shuffle Null
-============================================================
-Two bars from `run_persistence_analysis.py`:
+Bar Charts: Supplier Persistence by View, and Against the Shuffle Null
+======================================================================
+Two panels from `run_persistence_analysis.py`:
 
-  - PR_0: the median PR when platforms are shuffled across records within
-    each year. This is how much more often a platform than a contractor is
-    kept, from there being fewer platforms alone.
-  - PR: the observed ratio of platform to contractor retention.
+  - Left, the raw rates: the share of an office's suppliers kept the next
+    year, by contractor (cA, naive view) and by platform (cB, unclouded view).
+    A bracket gives their ratio PR = cB / cA with its paired interval.
+  - Right, the inference: PR against PR_0, the median PR when platforms are
+    shuffled across records within each year. PR_0 is how much more often a
+    platform than a contractor is kept from there being fewer platforms
+    alone. A bracket gives PR / PR_0, the persistence beyond what coarsening
+    explains, with the one-sided permutation p-value.
 
-A bracket over the pair gives PR / PR_0, the persistence beyond what
-coarsening explains, with the one-sided permutation p-value.
-
-Error bars: PR has its 95% BCa interval over offices; PR_0 has the
-2.5-97.5th percentiles of the null distribution.
+Error bars: cA, cB and PR have 95% BCa intervals over offices; PR_0 has the
+2.5-97.5th percentiles of the null distribution. cA and cB are paired, so
+overlapping bars on the left do not imply PR's interval spans 1.
 
 Run from project root (after `just persistence`):
-    uv run plot_persistence.py [--scope all|imputed|attributed] [--file-type pdf]
+    uv run plot_persistence.py [--scope all|attributed] [--file-type pdf]
 
 Design notes:
-  - Styling is imported from plot_concentration so the figures match: the null
-    is the grey baseline, the observed value carries the finding in blue.
-  - The axis starts at zero, so bar heights compare honestly, and a dashed line
-    marks 1x, where platforms are kept exactly as often as contractors.
+  - Styling is imported from plot_concentration so the figures match: the
+    baseline (naive view, null) is grey, the finding (unclouded view,
+    observed PR) is blue.
+  - The left axis starts at zero, so bar heights compare honestly. The right
+    starts at 1x: platforms merge contractors, so PR cannot fall below 1, and
+    1x (platforms kept exactly as often as contractors) is the floor.
 """
 
 import argparse
+from collections.abc import Callable
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -43,8 +48,12 @@ from plot_concentration import LABEL_FONT_SIZE, TICK_FONT_SIZE, _style_axis
 from run_persistence_analysis import SCOPES, summary_path
 
 BAR_WIDTH = 0.5
-# (statistic in the summary, tick label, colour), left to right.
-BARS = [
+# (statistic in the summary, tick label, colour), left to right, per panel.
+RATE_BARS = [
+    ("cA", "Naive view\n(by contractor)", NAIVE_COLOR),
+    ("cB", "Unclouded view\n(by platform)", UNCLOUDED_COLOR),
+]
+RATIO_BARS = [
     ("pr_null", "Shuffle null (PR$_0$)", NAIVE_COLOR),
     ("pr", "Observed (PR)", UNCLOUDED_COLOR),
 ]
@@ -58,18 +67,28 @@ def format_p(p: float, n_perm: int) -> str:
     return f"p = {p:.3f}" if p >= 0.001 else f"p = {p:.1g}"
 
 
-def plot_persistence(summary: pd.DataFrame, output_path: Path) -> Path:
-    """Draw the two bars with the ratio bracket and save the figure."""
-    stats = summary.set_index("statistic")
-    n_perm = int(summary["n_perm"].iloc[0])
-
-    fig, ax = plt.subplots(figsize=(6.5, 3.6), dpi=200)
-    fig.patch.set_facecolor(SURFACE)
-
+def _draw_bars(
+    ax: plt.Axes,
+    stats: pd.DataFrame,
+    bars: list[tuple[str, str, str]],
+    label: Callable[[float], str],
+    base: float = 0.0,
+) -> float:
+    """
+    Bars rising from `base`, with their intervals and value labels; returns the
+    highest whisker.
+    """
     tops = []
-    for x, (stat, _, color) in enumerate(BARS):
+    for x, (stat, _, color) in enumerate(bars):
         row = stats.loc[stat]
-        ax.bar(x, row["estimate"], width=BAR_WIDTH, color=color, zorder=2)
+        ax.bar(
+            x,
+            row["estimate"] - base,
+            bottom=base,
+            width=BAR_WIDTH,
+            color=color,
+            zorder=2,
+        )
         ax.errorbar(
             x,
             row["estimate"],
@@ -86,7 +105,7 @@ def plot_persistence(summary: pd.DataFrame, output_path: Path) -> Path:
         )
         # Inside the bar, just below the error bar's lower cap.
         ax.annotate(
-            f"{row['estimate']:.2f}×",
+            label(row["estimate"]),
             xy=(x, row["ci_low"]),
             xytext=(0, -8),
             textcoords="offset points",
@@ -97,20 +116,17 @@ def plot_persistence(summary: pd.DataFrame, output_path: Path) -> Path:
             zorder=4,
         )
         tops.append(row["ci_high"])
+    ax.set_xlim(-0.6, len(bars) - 0.4)
+    return max(tops)
 
-    _style_axis(
-        ax,
-        [label for _, label, _ in BARS],
-        "",
-        "Platform ÷ contractor\npersistence",
-    )
-    ax.yaxis.set_major_formatter(lambda value, _: f"{value:g}×")
-    ax.set_xlim(-0.6, len(BARS) - 0.4)
-    ax.axhline(1, color=TEXT_SECONDARY, linewidth=1, linestyle=(0, (2, 2)), zorder=1)
 
-    # Bracket over both bars, labelled with the ratio and its p-value.
-    y = max(tops) * 1.06
-    tick = max(tops) * 0.025
+def _draw_bracket(ax: plt.Axes, top: float, label: str, base: float = 0.0) -> None:
+    """
+    A labelled bracket over both bars; sets the y-limits, from `base`, to make
+    room for it.
+    """
+    y = base + (top - base) * 1.06
+    tick = (top - base) * 0.025
     ax.plot(
         [0, 0, 1, 1],
         [y - tick, y, y, y - tick],
@@ -118,18 +134,62 @@ def plot_persistence(summary: pd.DataFrame, output_path: Path) -> Path:
         linewidth=1.2,
         zorder=3,
     )
-    excess = stats.loc["pr_excess", "estimate"]
-    p_label = format_p(stats.loc["p_value", "estimate"], n_perm)
     ax.text(
         0.5,
         y + tick,
-        f"PR / PR$_0$ = {excess:.2f}×   ({p_label})",
+        label,
         ha="center",
         va="bottom",
         fontsize=LABEL_FONT_SIZE - 2,
         color=TEXT_PRIMARY,
     )
-    ax.set_ylim(0, y * 1.14)
+    ax.set_ylim(base, base + (y - base) * 1.14)
+
+
+def _draw_rates(ax: plt.Axes, stats: pd.DataFrame) -> None:
+    """Left panel: the share of suppliers kept the next year, in each view."""
+    top = _draw_bars(ax, stats, RATE_BARS, lambda value: f"{value:.0%}")
+    _style_axis(
+        ax,
+        [label for _, label, _ in RATE_BARS],
+        "Persistence by view",
+        "Suppliers kept the next year",
+    )
+    ax.yaxis.set_major_formatter(lambda value, _: f"{value:.0%}")
+    pr = stats.loc["pr"]
+    _draw_bracket(
+        ax,
+        top,
+        f"PR = {pr['estimate']:.2f}×   [{pr['ci_low']:.2f}–{pr['ci_high']:.2f}]",
+    )
+
+
+def _draw_ratio(ax: plt.Axes, stats: pd.DataFrame, n_perm: int) -> None:
+    """Right panel: the observed PR against the shuffle null."""
+    # PR cannot fall below 1 (platforms merge contractors), so bars rise from 1x.
+    top = _draw_bars(ax, stats, RATIO_BARS, lambda value: f"{value:.2f}×", base=1)
+    _style_axis(
+        ax,
+        [label for _, label, _ in RATIO_BARS],
+        "Beyond aggregation",
+        "Platform ÷ contractor\npersistence",
+    )
+    ax.yaxis.set_major_formatter(lambda value, _: f"{value:g}×")
+    excess = stats.loc["pr_excess", "estimate"]
+    p_label = format_p(stats.loc["p_value", "estimate"], n_perm)
+    _draw_bracket(ax, top, f"PR / PR$_0$ = {excess:.2f}×   ({p_label})", base=1)
+
+
+def plot_persistence(summary: pd.DataFrame, output_path: Path) -> Path:
+    """Draw the rates and the ratio side by side and save the figure."""
+    stats = summary.set_index("statistic")
+    n_perm = int(summary["n_perm"].iloc[0])
+
+    fig, (left, right) = plt.subplots(ncols=2, figsize=(11, 4.2), dpi=200)
+    fig.patch.set_facecolor(SURFACE)
+    fig.subplots_adjust(wspace=0.35)
+    _draw_rates(left, stats)
+    _draw_ratio(right, stats, n_perm)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, facecolor=SURFACE, bbox_inches="tight")

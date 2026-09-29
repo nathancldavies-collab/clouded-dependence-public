@@ -13,9 +13,13 @@ and years:
 
 Each record's unclouded key has a source (`key_source`):
 
-    attributed   its own platform attribution
-    imputed      unattributed, keyed by its contractor's modal platform
-    contractor   unattributed, contractor never attributed: keeps its UEI
+    attributed   its own platform attribution (Phases 1-3)
+    contractor   unattributed: keeps its contractor UEI, as in the naive view
+
+Unattributed records are not given a platform. A contractor attributed in some
+years and not others therefore switches key in the unclouded view only, which
+reads as platform churn; this can only pull PR down, so the estimate is
+conservative.
 
 The unclouded view is a coarsening of the naive one, so PR >= 1 almost
 mechanically. The null is therefore a record-level label shuffle: platforms
@@ -33,7 +37,7 @@ import pandas as pd
 from clouded_deps.pipeline.views import ATTRIBUTED_METHODS
 
 VIEWS = ("naive", "unclouded")
-KEY_SOURCES = ("attributed", "imputed", "contractor")
+KEY_SOURCES = ("attributed", "contractor")
 
 
 def attach_buyer(records: pd.DataFrame, primes: pd.DataFrame) -> pd.DataFrame:
@@ -50,35 +54,10 @@ def attach_buyer(records: pd.DataFrame, primes: pd.DataFrame) -> pd.DataFrame:
     return records.assign(buyer=records["original_prime_id"].map(buyer))
 
 
-def impute_platforms(records: pd.DataFrame) -> pd.DataFrame:
-    """
-    Key the unattributed records of every contractor with at least one
-    attributed record by its modal attributed platform, and add `key_source`.
-
-    Without this, a contractor attributed in one year and not the next would
-    change key in the unclouded view only, which reads as spurious platform
-    churn. Ties between platforms go to the first name alphabetically.
-    Unattributed records of never-attributed contractors keep their UEI.
-    """
+def label_key_sources(records: pd.DataFrame) -> pd.DataFrame:
+    """Add `key_source`: attributed records carry a platform, the rest their UEI."""
     attributed = records["attribution_method"].isin(ATTRIBUTED_METHODS)
-    modal = (
-        records[attributed]
-        .groupby(["contractor", "final_platform"])
-        .size()
-        .rename("n")
-        .reset_index()
-        .sort_values(["n", "final_platform"], ascending=[False, True])
-        .drop_duplicates("contractor")
-        .set_index("contractor")["final_platform"]
-    )
-    imputed = ~attributed & records["contractor"].isin(modal.index)
-    source = np.select([attributed, imputed], KEY_SOURCES[:2], KEY_SOURCES[2])
-    return records.assign(
-        unclouded=records["unclouded"].where(
-            ~imputed, records["contractor"].map(modal)
-        ),
-        key_source=source,
-    )
+    return records.assign(key_source=np.where(attributed, *KEY_SOURCES))
 
 
 def retention_counts(
@@ -124,8 +103,8 @@ def shuffle_platforms(
     """
     One draw of the null for the unclouded key.
 
-    Platforms (attributed and imputed alike) are permuted across records within
-    each year. Contractor-keyed records have no platform and stay fixed.
+    Platforms are permuted across attributed records within each year.
+    Contractor-keyed records have no platform and stay fixed.
     """
     key = codes["unclouded"]
     out = key.copy()
