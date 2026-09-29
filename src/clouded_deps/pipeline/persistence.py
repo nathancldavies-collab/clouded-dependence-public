@@ -1,5 +1,6 @@
 """
-Supplier persistence: do buyers keep their platform when they change contractor?
+Supplier persistence: are buyers' suppliers more persistent by platform than by
+contractor, beyond what merging contractors into platforms explains?
 
 For buyer g (an awarding office) and fiscal year t, a supplier s is *at risk*
 if it holds cloud dollars from g in t and g buys cloud again in t+1. It is
@@ -17,11 +18,10 @@ Each record's unclouded key has a source (`key_source`):
     contractor   unattributed, contractor never attributed: keeps its UEI
 
 The unclouded view is a coarsening of the naive one, so PR >= 1 almost
-mechanically. The null is therefore a label shuffle that breaks any tie between
-buyer and platform: attributed platforms are permuted across records within
-each year, and imputed platforms are permuted across contractors, so all of a
-contractor's imputed records still share one platform. Contractor-keyed records
-are the same in both views and stay fixed.
+mechanically. The null is therefore a record-level label shuffle: platforms
+are permuted across records within each year, which keeps every platform's
+yearly record count but breaks any tie between buyer and platform.
+Contractor-keyed records are the same in both views and stay fixed.
 
 Everything below runs on integer codes, so a permutation or a bootstrap draw
 costs a few array passes rather than a pandas groupby.
@@ -124,23 +124,13 @@ def shuffle_platforms(
     """
     One draw of the null for the unclouded key.
 
-    Attributed platforms are permuted across records within each year. Imputed
-    platforms are permuted across contractors, keeping the imputation's rule
-    that one contractor's imputed records share a platform. Contractor-keyed
-    records stay fixed.
+    Platforms (attributed and imputed alike) are permuted across records within
+    each year. Contractor-keyed records have no platform and stay fixed.
     """
-    key, source = codes["unclouded"], codes["source"]
+    key = codes["unclouded"]
     out = key.copy()
-    attributed = source == "attributed"
-    out[attributed] = shuffle_within_year(
-        key[attributed], codes["year"][attributed], rng
-    )
-    imputed = source == "imputed"
-    if imputed.any():
-        contractors, idx = np.unique(codes["naive"][imputed], return_inverse=True)
-        platform = np.empty(len(contractors), dtype=key.dtype)
-        platform[idx] = key[imputed]
-        out[imputed] = rng.permutation(platform)[idx]
+    platform = codes["source"] != "contractor"
+    out[platform] = shuffle_within_year(key[platform], codes["year"][platform], rng)
     return out
 
 

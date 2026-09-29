@@ -146,10 +146,10 @@ def test_impute_platforms_uses_modal_platform() -> None:
     ]
 
 
-def test_null_keeps_imputation_structure() -> None:
+def test_null_shuffles_platforms_by_record() -> None:
     """
-    Attributed labels keep their yearly counts, each contractor's imputed
-    records keep sharing one platform, and contractor-keyed records stay put.
+    Platform labels, attributed and imputed alike, move between records of the
+    same year; contractor-keyed records stay put.
     """
     rows = pd.DataFrame(
         [
@@ -168,27 +168,17 @@ def test_null_keeps_imputation_structure() -> None:
         columns=["buyer", "fiscal_year", "naive", "unclouded", "key_source"],
     )
     codes = ps.encode(rows)
-    source = codes["source"]
+    key, source = codes["unclouded"], codes["source"]
+    platform = source != "contractor"
     rng = np.random.default_rng(0)
     seen = set()
     for _ in range(50):
         shuffled = ps.shuffle_platforms(codes, rng)
-        attributed = source == "attributed"
         for year in (0, 1):
-            in_year = attributed & (codes["year"] == year)
-            assert sorted(shuffled[in_year]) == sorted(codes["unclouded"][in_year])
-        imputed = source == "imputed"
-        by_contractor = pd.Series(shuffled[imputed]).groupby(codes["naive"][imputed])
-        assert (by_contractor.nunique() == 1).all()
-        # Contractors swap platforms, so the set of imputed platforms is kept.
-        assert sorted(by_contractor.first()) == sorted(
-            pd.Series(codes["unclouded"][imputed])
-            .groupby(codes["naive"][imputed])
-            .first()
-        )
-        seen.add(tuple(by_contractor.first()))
-        fixed = source == "contractor"
-        assert (shuffled[fixed] == codes["unclouded"][fixed]).all()
+            in_year = platform & (codes["year"] == year)
+            assert sorted(shuffled[in_year]) == sorted(key[in_year])
+        assert (shuffled[~platform] == key[~platform]).all()
+        seen.add(tuple(shuffled[platform]))
     assert len(seen) > 1
 
 

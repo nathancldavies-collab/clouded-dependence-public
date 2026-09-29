@@ -2,9 +2,10 @@
 """
 Supplier Persistence: Naive vs Unclouded View
 =============================================
-Tests whether platforms persist where contractors churn. For each awarding
-office and fiscal year, how often does a cloud supplier used this year get
-used again next year? It is computed twice:
+Tests whether buyers' cloud suppliers are more persistent by platform than by
+contractor, beyond what merging contractors into platforms explains. For each
+awarding office and fiscal year, how often does a cloud supplier used this year
+get used again next year? It is computed twice:
 
   - cA: suppliers keyed by contractor (naive view)
   - cB: suppliers keyed by platform   (unclouded view)
@@ -19,10 +20,9 @@ both views. Three scopes (--scope):
   - attributed: platform-attributed records only, no imputation (robustness).
 
 Since platforms are fewer than contractors, PR > 1 almost by construction.
-The test is therefore against a label-shuffle null (attributed platforms
-permuted across records within each year, imputed platforms across
-contractors), reported as its median PR_0, the excess PR / PR_0, and a
-one-sided permutation p-value.
+The test is therefore against a record-level label-shuffle null (platforms
+permuted across records within each year), reported as its median PR_0, the
+excess PR / PR_0, and a one-sided permutation p-value.
 
 Intervals are 95% BCa from a cluster bootstrap over offices, with cA and cB on
 the same resamples so that PR's interval is paired.

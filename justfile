@@ -31,3 +31,4 @@ persistence *args="--table":
 
 plot-persistence *args="--file-type=pdf":
     uv run plot_persistence.py {{args}}
+    uv run plot_persistence_example.py {{args}}
