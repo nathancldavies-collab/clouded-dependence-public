@@ -5,7 +5,8 @@
       "Bash(uv sync *)",
       "Bash(just install *)",
       "Bash(uv tool *)",
-      "Bash(git status *)"
+      "Bash(git status *)",
+      "Bash(uv run python -c ' *)"
     ]
   }
 }

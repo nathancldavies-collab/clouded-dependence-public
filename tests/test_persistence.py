@@ -99,6 +99,35 @@ def test_shuffle_keeps_yearly_counts(records: pd.DataFrame) -> None:
             assert sorted(shuffled[in_year]) == sorted(codes["unclouded"][in_year])
 
 
+def test_impute_platforms_uses_modal_platform() -> None:
+    """Unattributed rows take their contractor's modal platform; others drop out."""
+    rows = pd.DataFrame(
+        [
+            # contractor, final_platform, attribution_method
+            ("X", "Azure", "phase2_description"),
+            ("X", "Azure", "phase1_direct"),
+            ("X", "AWS", "phase2_description"),
+            ("X", "X Inc", "cloud_unattributed_contractor"),
+            ("Y", "Azure", "phase3_pattern"),
+            ("Y", "AWS", "phase3_pattern"),
+            ("Y", "Y Inc", "cloud_unattributed_contractor"),
+            ("Z", "Z Inc", "cloud_unattributed_contractor"),
+        ],
+        columns=["contractor", "final_platform", "attribution_method"],
+    )
+    rows = rows.assign(unclouded=rows["final_platform"])
+    # Z was never attributed; Y's AWS/Azure tie goes to AWS alphabetically.
+    assert ps.impute_platforms(rows)["unclouded"].tolist() == [
+        "Azure",
+        "Azure",
+        "AWS",
+        "Azure",
+        "Azure",
+        "AWS",
+        "AWS",
+    ]
+
+
 def test_attach_buyer_uses_department_and_prime() -> None:
     primes = pd.DataFrame(
         {

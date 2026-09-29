@@ -16,7 +16,7 @@ Error bars: PR has its 95% BCa interval over offices; PR_0 has the
 2.5-97.5th percentiles of the null distribution.
 
 Run from project root (after `just persistence`):
-    uv run plot_persistence.py [--file-type pdf]
+    uv run plot_persistence.py [--scope attributed|imputed] [--file-type pdf]
 
 Design notes:
   - Styling is imported from plot_concentration so the figures match: the null
@@ -40,6 +40,7 @@ from clouded_deps.plot_style import (
     UNCLOUDED_COLOR,
 )
 from plot_concentration import LABEL_FONT_SIZE, TICK_FONT_SIZE, _style_axis
+from run_persistence_analysis import SCOPES, summary_path
 
 BAR_WIDTH = 0.5
 # (statistic in the summary, tick label, colour), left to right.
@@ -141,10 +142,10 @@ def parse_args() -> argparse.Namespace:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
-        "--summary",
-        type=Path,
-        default=OUTPUTS_DIR / "persistence" / "persistence_summary.csv",
-        help="Summary table from run_persistence_analysis.py",
+        "--scope",
+        choices=SCOPES,
+        default="attributed",
+        help="Which run_persistence_analysis.py scope to plot (default: attributed)",
     )
     parser.add_argument(
         "--file-type",
@@ -157,10 +158,13 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    if not args.summary.exists():
-        raise SystemExit(f"Missing {args.summary}\nRun `just persistence` first.")
+    summary = summary_path(OUTPUTS_DIR / "persistence", args.scope)
+    if not summary.exists():
+        raise SystemExit(
+            f"Missing {summary}\nRun `just persistence --scope {args.scope}` first."
+        )
+    name = summary.stem.replace("persistence_summary", "persistence_ratio")
     saved = plot_persistence(
-        pd.read_csv(args.summary),
-        args.summary.parent / f"persistence_ratio.{args.file_type}",
+        pd.read_csv(summary), summary.parent / f"{name}.{args.file_type}"
     )
     print(f"  saved: {saved}")

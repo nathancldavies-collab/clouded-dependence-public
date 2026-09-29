@@ -22,6 +22,8 @@ costs a few array passes rather than a pandas groupby.
 import numpy as np
 import pandas as pd
 
+from clouded_deps.pipeline.views import ATTRIBUTED_METHODS
+
 VIEWS = ("naive", "unclouded")
 
 
@@ -37,6 +39,35 @@ def attach_buyer(records: pd.DataFrame, primes: pd.DataFrame) -> pd.DataFrame:
     department = offices["Awarding Department/Agency"].fillna("")
     buyer = department + " | " + offices["Awarding Office"]
     return records.assign(buyer=records["original_prime_id"].map(buyer))
+
+
+def impute_platforms(records: pd.DataFrame) -> pd.DataFrame:
+    """
+    Records of every contractor with at least one attributed record, with its
+    unattributed records keyed by its modal attributed platform.
+
+    Without this, a contractor attributed in one year and not the next would
+    change key in the unclouded view only, which reads as spurious platform
+    churn. Ties between platforms go to the first name alphabetically.
+    """
+    attributed = records["attribution_method"].isin(ATTRIBUTED_METHODS)
+    modal = (
+        records[attributed]
+        .groupby(["contractor", "final_platform"])
+        .size()
+        .rename("n")
+        .reset_index()
+        .sort_values(["n", "final_platform"], ascending=[False, True])
+        .drop_duplicates("contractor")
+        .set_index("contractor")["final_platform"]
+    )
+    known = records["contractor"].isin(modal.index)
+    records = records[known]
+    return records.assign(
+        unclouded=records["unclouded"].where(
+            attributed[known], records["contractor"].map(modal)
+        )
+    )
 
 
 def retention_counts(

@@ -10,8 +10,13 @@ used again next year? It is computed twice:
   - cB: suppliers keyed by platform   (unclouded view)
   - PR = cB / cA, the persistence ratio
 
-The scope is platform-attributed cloud records only: unattributed records have
-the same key in both views and would only pull PR toward 1.
+Two scopes (--scope):
+
+  - attributed: platform-attributed cloud records only (the headline).
+    Unattributed records have the same key in both views and would only pull
+    PR toward 1.
+  - imputed: all cloud records of contractors attributed at least once, the
+    unattributed ones keyed by the contractor's modal platform (robustness).
 
 Since platforms are fewer than contractors, PR > 1 almost by construction.
 The test is therefore against a label-shuffle null (platforms permuted across
@@ -22,7 +27,8 @@ Intervals are 95% BCa from a cluster bootstrap over offices, with cA and cB on
 the same resamples so that PR's interval is paired.
 
 Run from project root:
-    uv run run_persistence_analysis.py [--n-boot 20000] [--n-perm 10000]
+    uv run run_persistence_analysis.py [--scope attributed|imputed]
+                                       [--n-boot 20000] [--n-perm 10000]
                                        [--table]
 """
 
@@ -33,17 +39,31 @@ import numpy as np
 import pandas as pd
 
 from clouded_deps.directories import DATA_DIR, OUTPUTS_DIR
-from clouded_deps.pipeline.persistence import attach_buyer, persistence
+from clouded_deps.pipeline.persistence import (
+    attach_buyer,
+    impute_platforms,
+    persistence,
+)
 from clouded_deps.pipeline.views import ATTRIBUTED_METHODS, load_records
 from clouded_deps.stats import bca_interval
 
 CI_LEVEL = 0.95
+SCOPES = ("attributed", "imputed")
 
 
-def load_attributed(data_path: Path, primes_path: Path) -> pd.DataFrame:
-    """Platform-attributed cloud records, each with its buyer."""
+def summary_path(out_dir: Path, scope: str) -> Path:
+    """The summary table for a scope; the headline scope keeps the plain name."""
+    suffix = "" if scope == "attributed" else f"_{scope}"
+    return out_dir / f"persistence_summary{suffix}.csv"
+
+
+def load_scope(data_path: Path, primes_path: Path, scope: str) -> pd.DataFrame:
+    """The cloud records in `scope`, each with its buyer."""
     records = load_records(data_path)
-    records = records[records["attribution_method"].isin(ATTRIBUTED_METHODS)]
+    if scope == "attributed":
+        records = records[records["attribution_method"].isin(ATTRIBUTED_METHODS)]
+    else:
+        records = impute_platforms(records)
     primes = pd.read_csv(
         primes_path,
         usecols=["Award ID", "Awarding Department/Agency", "Awarding Office"],
@@ -55,7 +75,9 @@ def load_attributed(data_path: Path, primes_path: Path) -> pd.DataFrame:
     return records[~missing]
 
 
-def summarise(result: dict, n_boot: int, n_perm: int, seed: int) -> pd.DataFrame:
+def summarise(
+    result: dict, scope: str, n_boot: int, n_perm: int, seed: int
+) -> pd.DataFrame:
     """One row per statistic, with BCa intervals where they apply."""
     rows = []
     for stat in ("cA", "cB", "pr"):
@@ -85,6 +107,7 @@ def summarise(result: dict, n_boot: int, n_perm: int, seed: int) -> pd.DataFrame
         {"statistic": "p_value", "estimate": p_value},
     ]
     return pd.DataFrame(rows).assign(
+        scope=scope,
         n_buyers=result["n_buyers"],
         n_records=result["n_records"],
         n_pairs_cA=result["n_pairs_cA"],
@@ -99,7 +122,7 @@ def print_table(summary: pd.DataFrame) -> None:
     """Print the summary as a readable table."""
     first = summary.iloc[0]
     print(
-        f"\n  Supplier persistence  ({first['n_records']:,} attributed records,"
+        f"\n  Supplier persistence  ({first['n_records']:,} {first['scope']} records,"
         f" {first['n_buyers']:,} offices;"
         f" {first['n_pairs_cA']:,} contractor pairs, {first['n_pairs_cB']:,} platform"
         " pairs at risk)"
@@ -152,6 +175,13 @@ def parse_args() -> argparse.Namespace:
         help="Directory for the output table",
     )
     parser.add_argument(
+        "--scope",
+        choices=SCOPES,
+        default="attributed",
+        help="Records in scope: attributed only, or all records of attributed"
+        " contractors with platforms imputed (default: attributed)",
+    )
+    parser.add_argument(
         "--n-boot",
         type=int,
         default=20_000,
@@ -174,12 +204,12 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    records = load_attributed(args.data, args.primes)
+    records = load_scope(args.data, args.primes, args.scope)
     result = persistence(records, args.n_boot, args.n_perm, args.seed)
-    summary = summarise(result, args.n_boot, args.n_perm, args.seed)
+    summary = summarise(result, args.scope, args.n_boot, args.n_perm, args.seed)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = args.out_dir / "persistence_summary.csv"
+    out_path = summary_path(args.out_dir, args.scope)
     summary.to_csv(out_path, index=False)
     if args.table:
         print_table(summary)

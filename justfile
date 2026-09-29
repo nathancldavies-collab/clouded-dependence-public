@@ -8,8 +8,13 @@ lint *files=".":
 pipeline:
     uv run run_pipeline.py
 
-generate-interrater *args:
+build-interrater-sample *args:
     uv run validation/build_validation_sample.py --rater ND JR {{args}}
+
+generate-interrater *args:
+    uv run validation/calculate_agreement.py --part a --compare pipeline llm --tex {{args}}
+    uv run validation/calculate_agreement.py --part a --binary --compare pipeline llm {{args}}
+    uv run validation/calculate_agreement.py --part b --compare pipeline llm --exclude-labels N/A --tex {{args}}
 
 exposure *args:
     uv run run_exposure_analysis.py {{args}}
